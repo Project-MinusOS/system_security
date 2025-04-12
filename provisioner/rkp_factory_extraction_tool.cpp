@@ -62,6 +62,17 @@ constexpr std::string_view kBinaryCsrOutput = "csr";     // Just the raw csr as 
 constexpr std::string_view kBuildPlusCsr = "build+csr";  // Text-encoded (JSON) build
                                                          // fingerprint plus CSR.
 
+// How CSRs should be validated when the "self_test" flag is set to "true".
+struct CsrValidationConfig {
+    // Names of IRemotelyProvisionedComponent instances for which degenerate DICE
+    // chains are allowed.
+    std::unordered_set<std::string>* allow_degenerate_irpc_names;
+
+    // Names of IRemotelyProvisionedComponent instances for which UDS certificate
+    // chains are required to be present in the CSR.
+    std::unordered_set<std::string>* require_uds_certs_irpc_names;
+};
+
 std::string getFullServiceName(const char* descriptor, const char* name) {
     return  std::string(descriptor) + "/" + name;
 }
