@@ -19,7 +19,7 @@ use crate::error::Error as KeystoreError;
 use crate::globals::{DB, ENFORCEMENTS, LEGACY_IMPORTER, SUPER_KEY};
 use crate::ks_err;
 use crate::permission::KeystorePerm;
-use crate::utils::{check_keystore_permission, watchdog as wd};
+use crate::utils::{check_keystore_permission, watchdog as wd, Challenge};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     HardwareAuthToken::HardwareAuthToken, HardwareAuthenticatorType::HardwareAuthenticatorType,
 };
@@ -189,7 +189,7 @@ impl AuthorizationManager {
 
     fn get_auth_tokens_for_credstore(
         &self,
-        challenge: i64,
+        challenge: Challenge,
         secure_user_id: i64,
         auth_token_max_age_millis: i64,
     ) -> Result<AuthorizationTokens> {
@@ -199,7 +199,7 @@ impl AuthorizationManager {
             .context(ks_err!("caller missing GetAuthToken permission"))?;
 
         // If the challenge is zero, return error
-        if challenge == 0 {
+        if challenge.0 == 0 {
             return Err(Error::Rc(ResponseCode::INVALID_ARGUMENT))
                 .context(ks_err!("Challenge can not be zero."));
         }
@@ -276,6 +276,7 @@ impl IKeystoreAuthorization for AuthorizationManager {
         secure_user_id: i64,
         auth_token_max_age_millis: i64,
     ) -> binder::Result<AuthorizationTokens> {
+        let challenge = Challenge(challenge);
         let _wp = wd::watch("IKeystoreAuthorization::getAuthTokensForCredStore");
         self.get_auth_tokens_for_credstore(challenge, secure_user_id, auth_token_max_age_millis)
             .map_err(into_logged_binder)

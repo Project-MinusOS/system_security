@@ -18,10 +18,12 @@ use crate::ks_err;
 use crate::error::{map_binder_status, Error, ErrorCode};
 use crate::globals::{get_timestamp_service, ASYNC_TASK, DB, ENFORCEMENTS};
 use crate::key_parameter::{KeyParameter, KeyParameterValue};
-use crate::{authorization::Error as AuthzError, super_key::SuperEncryptionType};
 use crate::{
+    authorization::Error as AuthzError, super_key::{SuperEncryptionType},
+    boot_level_keys::BootLevel,
     database::{AuthTokenEntry, BootTime},
     globals::SUPER_KEY,
+    utils::Challenge,
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, ErrorCode::ErrorCode as Ec, HardwareAuthToken::HardwareAuthToken,
@@ -151,7 +153,7 @@ struct TokenReceiverMap {
     /// counter (second field in the tuple) turns 0, the map is cleaned from stale entries.
     /// The cleanup counter is decremented every time a new receiver is added.
     /// and reset to TokenReceiverMap::CLEANUP_PERIOD + 1 after each cleanup.
-    map_and_cleanup_counter: Mutex<(HashMap<i64, TokenReceiver>, u8)>,
+    map_and_cleanup_counter: Mutex<(HashMap<Challenge, TokenReceiver>, u8)>,
 }
 
 impl Default for TokenReceiverMap {
@@ -173,7 +175,7 @@ impl TokenReceiverMap {
             // added.
             let mut map = self.map_and_cleanup_counter.lock().unwrap();
             let (ref mut map, _) = *map;
-            map.remove_entry(&hat.challenge)
+            map.remove_entry(&Challenge(hat.challenge))
         };
 
         if let Some((_, recv)) = recv {
@@ -181,7 +183,7 @@ impl TokenReceiverMap {
         }
     }
 
-    pub fn add_receiver(&self, challenge: i64, recv: TokenReceiver) {
+    pub fn add_receiver(&self, challenge: Challenge, recv: TokenReceiver) {
         let mut map = self.map_and_cleanup_counter.lock().unwrap();
         let (ref mut map, ref mut cleanup_counter) = *map;
         map.insert(challenge, recv);
@@ -210,15 +212,15 @@ impl TokenReceiver {
     }
 }
 
-fn get_timestamp_token(challenge: i64) -> Result<TimeStampToken, Error> {
+fn get_timestamp_token(challenge: Challenge) -> Result<TimeStampToken, Error> {
     let dev = get_timestamp_service().expect(concat!(
         "Secure Clock service must be present ",
         "if TimeStampTokens are required."
     ));
-    map_binder_status(dev.generateTimeStamp(challenge))
+    map_binder_status(dev.generateTimeStamp(challenge.0))
 }
 
-fn timestamp_token_request(challenge: i64, sender: Sender<Result<TimeStampToken, Error>>) {
+fn timestamp_token_request(challenge: Challenge, sender: Sender<Result<TimeStampToken, Error>>) {
     if let Err(e) = sender.send(get_timestamp_token(challenge)) {
         log::info!(
             concat!("Receiver hung up ", "before timestamp token could be delivered. {:?}"),
@@ -231,7 +233,10 @@ impl AuthInfo {
     /// This function gets called after an operation was successfully created.
     /// It makes all the preparations required, so that the operation has all the authentication
     /// related artifacts to advance on update and finish.
-    pub fn finalize_create_authorization(&mut self, challenge: i64) -> Option<OperationChallenge> {
+    pub fn finalize_create_authorization(
+        &mut self,
+        challenge: Challenge,
+    ) -> Option<OperationChallenge> {
         match &self.state {
             DeferredAuthState::OpAuthRequired => {
                 let auth_request = AuthRequest::op_auth();
@@ -239,7 +244,7 @@ impl AuthInfo {
                 ENFORCEMENTS.register_op_auth_receiver(challenge, token_receiver);
 
                 self.state = DeferredAuthState::Waiting(auth_request);
-                Some(OperationChallenge { challenge })
+                Some(OperationChallenge { challenge: challenge.0 })
             }
             DeferredAuthState::TimeStampRequired(hat) => {
                 let hat = (*hat).clone();
@@ -454,7 +459,7 @@ impl Enforcements {
         let mut unlocked_device_required = false;
         let mut key_usage_limited: Option<i64> = None;
         let mut confirmation_token_receiver: Option<Arc<Mutex<Option<Receiver<Vec<u8>>>>>> = None;
-        let mut max_boot_level: Option<i32> = None;
+        let mut max_boot_level: Option<BootLevel> = None;
 
         // iterate through key parameters, recording information we need for authorization
         // enforcements later, or enforcing authorizations in place, where applicable
@@ -517,7 +522,7 @@ impl Enforcements {
                     confirmation_token_receiver = Some(self.confirmation_token_receiver.clone());
                 }
                 KeyParameterValue::MaxBootLevel(level) => {
-                    max_boot_level = Some(*level);
+                    max_boot_level = Some(BootLevel(*level as usize));
                 }
                 // NOTE: as per offline discussion, sanitizing key parameters and rejecting
                 // create operation if any non-allowed tags are present, is not done in
@@ -679,7 +684,7 @@ impl Enforcements {
     /// This is to be called by create_operation, once it has received the operation challenge
     /// from keymint for an operation whose authorization decision is OpAuthRequired, as signalled
     /// by the DeferredAuthState.
-    fn register_op_auth_receiver(&self, challenge: i64, recv: TokenReceiver) {
+    fn register_op_auth_receiver(&self, challenge: Challenge, recv: TokenReceiver) {
         self.op_auth_map.add_receiver(challenge, recv);
     }
 
@@ -702,9 +707,10 @@ impl Enforcements {
         let mut result = Candidate { priority: 0, enc_type: SuperEncryptionType::None };
         for kp in key_parameters {
             let t = match kp.key_parameter_value() {
-                KeyParameterValue::MaxBootLevel(level) => {
-                    Candidate { priority: 3, enc_type: SuperEncryptionType::BootLevel(*level) }
-                }
+                KeyParameterValue::MaxBootLevel(level) => Candidate {
+                    priority: 3,
+                    enc_type: SuperEncryptionType::BootLevel(BootLevel(*level as usize)),
+                },
                 KeyParameterValue::UnlockedDeviceRequired if *domain == Domain::APP => {
                     Candidate { priority: 2, enc_type: SuperEncryptionType::UnlockedDeviceRequired }
                 }
@@ -731,7 +737,7 @@ impl Enforcements {
     /// is returned.
     pub fn get_auth_tokens(
         &self,
-        challenge: i64,
+        challenge: Challenge,
         secure_user_id: i64,
         auth_token_max_age_millis: i64,
     ) -> Result<(HardwareAuthToken, TimeStampToken)> {

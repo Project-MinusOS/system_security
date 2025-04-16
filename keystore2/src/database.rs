@@ -53,7 +53,7 @@ use crate::impl_metadata; // This is in database/utils.rs
 use crate::key_parameter::{KeyParameter, KeyParameterValue, Tag};
 use crate::ks_err;
 use crate::permission::KeyPermSet;
-use crate::utils::{get_current_time_in_milliseconds, watchdog as wd, AID_USER_OFFSET};
+use crate::utils::{get_current_time_in_milliseconds, watchdog as wd, Challenge, AID_USER_OFFSET};
 use crate::{
     error::{Error as KsError, ErrorCode, ResponseCode},
     super_key::SuperKeyType,
@@ -893,8 +893,8 @@ impl AuthTokenEntry {
     }
 
     /// Returns the challenge value of the auth token.
-    pub fn challenge(&self) -> i64 {
-        self.auth_token.challenge
+    pub fn challenge(&self) -> Challenge {
+        Challenge(self.auth_token.challenge)
     }
 }
 
