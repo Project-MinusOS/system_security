@@ -35,7 +35,7 @@ use crate::utils::{
     check_device_attestation_permissions, check_key_permission,
     check_unique_id_attestation_permissions, is_device_id_attestation_tag,
     key_characteristics_to_internal, log_security_safe_params, uid_to_android_user, watchdog as wd,
-    UNDEFINED_NOT_AFTER,
+    Challenge, UNDEFINED_NOT_AFTER,
 };
 use crate::{
     database::{
@@ -373,7 +373,8 @@ impl KeystoreSecurityLevel {
             )
             .context(ks_err!("Failed to begin operation."))?;
 
-        let operation_challenge = auth_info.finalize_create_authorization(begin_result.challenge);
+        let operation_challenge =
+            auth_info.finalize_create_authorization(Challenge(begin_result.challenge));
 
         let op_params: Vec<KeyParameter> = operation_parameters.to_vec();
 

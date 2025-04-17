@@ -28,6 +28,10 @@ use anyhow::{Context, Result};
 use keystore2_crypto::{hkdf_expand, ZVec, AES_256_KEY_LENGTH};
 use std::{collections::VecDeque, convert::TryFrom};
 
+/// Boot level value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BootLevel(pub usize);
+
 /// Strategies used to prevent later boot stages from using the KM key that protects the level 0
 /// key
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -183,7 +187,7 @@ pub fn get_level_zero_key(db: &mut KeystoreDB) -> Result<ZVec> {
 /// When the boot level advances, keys prior to the current boot level are securely dropped.
 pub struct BootLevelKeyCache {
     /// Least boot level currently accessible, if any is.
-    current: usize,
+    current: BootLevel,
     /// Invariant: cache entry *i*, if it exists, holds the HKDF key for boot level
     /// *i* + `current`. If the cache is non-empty it can be grown forwards, but it cannot be
     /// grown backwards, so keys below `current` are inaccessible.
@@ -200,11 +204,11 @@ impl BootLevelKeyCache {
     pub fn new(level_zero_key: ZVec) -> Self {
         let mut cache: VecDeque<ZVec> = VecDeque::new();
         cache.push_back(level_zero_key);
-        Self { current: 0, cache }
+        Self { current: BootLevel(0), cache }
     }
 
     /// Report whether the key for the given level can be inferred.
-    pub fn level_accessible(&self, boot_level: usize) -> bool {
+    pub fn level_accessible(&self, boot_level: BootLevel) -> bool {
         // If the requested boot level is lower than the current boot level
         // or if we have reached the end (`cache.empty()`) we can't retrieve
         // the boot key.
@@ -213,16 +217,16 @@ impl BootLevelKeyCache {
 
     /// Get the HKDF key for boot level `boot_level`. The key for level *i*+1
     /// is calculated from the level *i* key using `hkdf_expand`.
-    fn get_hkdf_key(&mut self, boot_level: usize) -> Result<Option<&ZVec>> {
+    fn get_hkdf_key(&mut self, boot_level: BootLevel) -> Result<Option<&ZVec>> {
         if !self.level_accessible(boot_level) {
             return Ok(None);
         }
         // `self.cache.len()` represents the first entry not in the cache,
         // so `self.current + self.cache.len()` is the first boot level not in the cache.
-        let first_not_cached = self.current + self.cache.len();
+        let first_not_cached = self.current.0 + self.cache.len();
 
         // Grow the cache forwards until it contains the desired boot level.
-        for _level in first_not_cached..=boot_level {
+        for _level in first_not_cached..=boot_level.0 {
             // We check at the start that cache is non-empty and future iterations only push,
             // so this must unwrap.
             let highest_key = self.cache.back().unwrap();
@@ -232,16 +236,15 @@ impl BootLevelKeyCache {
         }
 
         // If we reach this point, we should have a key at index boot_level - current.
-        Ok(Some(self.cache.get(boot_level - self.current).unwrap()))
+        Ok(Some(self.cache.get(boot_level.0 - self.current.0).unwrap()))
     }
 
     /// Drop keys prior to the given boot level, while retaining the ability to generate keys for
     /// that level and later.
-    pub fn advance_boot_level(&mut self, new_boot_level: usize) -> Result<()> {
+    pub fn advance_boot_level(&mut self, new_boot_level: BootLevel) -> Result<()> {
         if !self.level_accessible(new_boot_level) {
             log::error!(
-                "Failed to advance boot level to {}, current is {}, cache size {}",
-                new_boot_level,
+                "Failed to advance boot level to {new_boot_level:?}, current is {:?}, cache size {}",
                 self.current,
                 self.cache.len()
             );
@@ -254,7 +257,7 @@ impl BootLevelKeyCache {
 
         // Then we split the queue at the index of the new boot level and discard the front,
         // keeping only the keys with the current boot level or higher.
-        self.cache = self.cache.split_off(new_boot_level - self.current);
+        self.cache = self.cache.split_off(new_boot_level.0 - self.current.0);
 
         // The new cache has the new boot level at index 0, so we set `current` to
         // `new_boot_level`.
@@ -271,7 +274,7 @@ impl BootLevelKeyCache {
 
     fn expand_key(
         &mut self,
-        boot_level: usize,
+        boot_level: BootLevel,
         out_len: usize,
         info: &[u8],
     ) -> Result<Option<ZVec>> {
@@ -283,7 +286,7 @@ impl BootLevelKeyCache {
     }
 
     /// Return the AES-256-GCM key for the current boot level.
-    pub fn aes_key(&mut self, boot_level: usize) -> Result<Option<ZVec>> {
+    pub fn aes_key(&mut self, boot_level: BootLevel) -> Result<Option<ZVec>> {
         self.expand_key(boot_level, AES_256_KEY_LENGTH, BootLevelKeyCache::HKDF_AES)
             .context(ks_err!("expand_key failed"))
     }
@@ -297,42 +300,42 @@ mod test {
     fn test_output_is_consistent() -> Result<()> {
         let initial_key = b"initial key";
         let mut blkc = BootLevelKeyCache::new(ZVec::try_from(initial_key as &[u8])?);
-        assert!(blkc.level_accessible(0));
-        assert!(blkc.level_accessible(9));
-        assert!(blkc.level_accessible(10));
-        assert!(blkc.level_accessible(100));
-        let v0 = blkc.aes_key(0).unwrap().unwrap();
-        let v10 = blkc.aes_key(10).unwrap().unwrap();
-        assert_eq!(Some(&v0), blkc.aes_key(0)?.as_ref());
-        assert_eq!(Some(&v10), blkc.aes_key(10)?.as_ref());
-        blkc.advance_boot_level(5)?;
-        assert!(!blkc.level_accessible(0));
-        assert!(blkc.level_accessible(9));
-        assert!(blkc.level_accessible(10));
-        assert!(blkc.level_accessible(100));
-        assert_eq!(None, blkc.aes_key(0)?);
-        assert_eq!(Some(&v10), blkc.aes_key(10)?.as_ref());
-        blkc.advance_boot_level(10)?;
-        assert!(!blkc.level_accessible(0));
-        assert!(!blkc.level_accessible(9));
-        assert!(blkc.level_accessible(10));
-        assert!(blkc.level_accessible(100));
-        assert_eq!(None, blkc.aes_key(0)?);
-        assert_eq!(Some(&v10), blkc.aes_key(10)?.as_ref());
-        blkc.advance_boot_level(0)?;
-        assert!(!blkc.level_accessible(0));
-        assert!(!blkc.level_accessible(9));
-        assert!(blkc.level_accessible(10));
-        assert!(blkc.level_accessible(100));
-        assert_eq!(None, blkc.aes_key(0)?);
-        assert_eq!(Some(v10), blkc.aes_key(10)?);
+        assert!(blkc.level_accessible(BootLevel(0)));
+        assert!(blkc.level_accessible(BootLevel(9)));
+        assert!(blkc.level_accessible(BootLevel(10)));
+        assert!(blkc.level_accessible(BootLevel(100)));
+        let v0 = blkc.aes_key(BootLevel(0)).unwrap().unwrap();
+        let v10 = blkc.aes_key(BootLevel(10)).unwrap().unwrap();
+        assert_eq!(Some(&v0), blkc.aes_key(BootLevel(0))?.as_ref());
+        assert_eq!(Some(&v10), blkc.aes_key(BootLevel(10))?.as_ref());
+        blkc.advance_boot_level(BootLevel(5))?;
+        assert!(!blkc.level_accessible(BootLevel(0)));
+        assert!(blkc.level_accessible(BootLevel(9)));
+        assert!(blkc.level_accessible(BootLevel(10)));
+        assert!(blkc.level_accessible(BootLevel(100)));
+        assert_eq!(None, blkc.aes_key(BootLevel(0))?);
+        assert_eq!(Some(&v10), blkc.aes_key(BootLevel(10))?.as_ref());
+        blkc.advance_boot_level(BootLevel(10))?;
+        assert!(!blkc.level_accessible(BootLevel(0)));
+        assert!(!blkc.level_accessible(BootLevel(9)));
+        assert!(blkc.level_accessible(BootLevel(10)));
+        assert!(blkc.level_accessible(BootLevel(100)));
+        assert_eq!(None, blkc.aes_key(BootLevel(0))?);
+        assert_eq!(Some(&v10), blkc.aes_key(BootLevel(10))?.as_ref());
+        blkc.advance_boot_level(BootLevel(0))?;
+        assert!(!blkc.level_accessible(BootLevel(0)));
+        assert!(!blkc.level_accessible(BootLevel(9)));
+        assert!(blkc.level_accessible(BootLevel(10)));
+        assert!(blkc.level_accessible(BootLevel(100)));
+        assert_eq!(None, blkc.aes_key(BootLevel(0))?);
+        assert_eq!(Some(v10), blkc.aes_key(BootLevel(10))?);
         blkc.finish();
-        assert!(!blkc.level_accessible(0));
-        assert!(!blkc.level_accessible(9));
-        assert!(!blkc.level_accessible(10));
-        assert!(!blkc.level_accessible(100));
-        assert_eq!(None, blkc.aes_key(0)?);
-        assert_eq!(None, blkc.aes_key(10)?);
+        assert!(!blkc.level_accessible(BootLevel(0)));
+        assert!(!blkc.level_accessible(BootLevel(9)));
+        assert!(!blkc.level_accessible(BootLevel(10)));
+        assert!(!blkc.level_accessible(BootLevel(100)));
+        assert_eq!(None, blkc.aes_key(BootLevel(0))?);
+        assert_eq!(None, blkc.aes_key(BootLevel(10))?);
         Ok(())
     }
 }

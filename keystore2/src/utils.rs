@@ -56,6 +56,15 @@ use std::time::Duration;
 #[cfg(test)]
 mod tests;
 
+/// A per-operation authentication challenge value.
+///
+/// The underlying integer type is `i64` to match the AIDL `long` type that is:
+/// - returned by KeyMint in `BeginResult`
+/// - passed on by `keystore2` in the `OperationChallenge` AIDL type on the
+///   `IKeystoreService` AIDL interface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Challenge(pub i64);
+
 /// Per RFC 5280 4.1.2.5, an undefined expiration (not-after) field should be set to GeneralizedTime
 /// 999912312359559, which is 253402300799000 ms from Jan 1, 1970.
 pub const UNDEFINED_NOT_AFTER: i64 = 253402300799000i64;

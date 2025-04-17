@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    boot_level_keys::{get_level_zero_key, BootLevelKeyCache},
+    boot_level_keys::{get_level_zero_key, BootLevel, BootLevelKeyCache},
     database::BlobMetaData,
     database::BlobMetaEntry,
     database::EncryptedBy,
@@ -55,7 +55,8 @@ use std::{convert::TryFrom, ops::Deref};
 #[cfg(test)]
 mod tests;
 
-const MAX_MAX_BOOT_LEVEL: usize = 1_000_000_000;
+const MAX_MAX_BOOT_LEVEL: BootLevel = BootLevel(1_000_000_000);
+
 /// Allow up to 15 seconds between the user unlocking using a biometric, and the auth
 /// token being used to unlock in [`SuperKeyManager::try_unlock_user_with_biometric`].
 /// This seems short enough for security purposes, while long enough that even the
@@ -122,7 +123,7 @@ pub enum SuperEncryptionType {
     /// Superencrypt with an UnlockedDeviceRequired super key.
     UnlockedDeviceRequired,
     /// Superencrypt with a key based on the desired boot level
-    BootLevel(i32),
+    BootLevel(BootLevel),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -130,7 +131,7 @@ pub enum SuperKeyIdentifier {
     /// id of the super key in the database.
     DatabaseId(i64),
     /// Boot level of the encrypting boot level key
-    BootLevel(i32),
+    BootLevel(BootLevel),
 }
 
 impl SuperKeyIdentifier {
@@ -138,7 +139,9 @@ impl SuperKeyIdentifier {
         if let Some(EncryptedBy::KeyId(key_id)) = metadata.encrypted_by() {
             Some(SuperKeyIdentifier::DatabaseId(*key_id))
         } else {
-            metadata.max_boot_level().map(|boot_level| SuperKeyIdentifier::BootLevel(*boot_level))
+            metadata
+                .max_boot_level()
+                .map(|boot_level| SuperKeyIdentifier::BootLevel(BootLevel(*boot_level as usize)))
         }
     }
 
@@ -148,7 +151,7 @@ impl SuperKeyIdentifier {
                 metadata.add(BlobMetaEntry::EncryptedBy(EncryptedBy::KeyId(*id)));
             }
             SuperKeyIdentifier::BootLevel(level) => {
-                metadata.add(BlobMetaEntry::MaxBootLevel(*level));
+                metadata.add(BlobMetaEntry::MaxBootLevel(level.0 as i32));
             }
         }
     }
@@ -318,7 +321,7 @@ impl SuperKeyManager {
             .context(ks_err!("PropertyWatcher::new failed"))?;
         loop {
             let level = w
-                .read(|_n, v| v.parse::<usize>().map_err(std::convert::Into::into))
+                .read(|_n, v| v.parse::<usize>().map_err(std::convert::Into::into).map(BootLevel))
                 .context(ks_err!("read of property failed"))?;
 
             // This scope limits the skm_guard life, so we don't hold the skm_guard while
@@ -334,15 +337,13 @@ impl SuperKeyManager {
                     .get_mut()
                     .unwrap();
                 if level < MAX_MAX_BOOT_LEVEL {
-                    log::info!("Read keystore.boot_level value {}", level);
+                    log::info!("Read keystore.boot_level value {level:?}");
                     boot_level_key_cache
                         .advance_boot_level(level)
                         .context(ks_err!("advance_boot_level failed"))?;
                 } else {
                     log::info!(
-                        "keystore.boot_level {} hits maximum {}, finishing.",
-                        level,
-                        MAX_MAX_BOOT_LEVEL
+                        "keystore.boot_level {level:?} hits maximum {MAX_MAX_BOOT_LEVEL:?}, finishing.",
                     );
                     boot_level_key_cache.finish();
                     break;
@@ -353,11 +354,11 @@ impl SuperKeyManager {
         Ok(())
     }
 
-    pub fn level_accessible(&self, boot_level: i32) -> bool {
+    pub fn level_accessible(&self, boot_level: BootLevel) -> bool {
         self.data
             .boot_level_key_cache
             .as_ref()
-            .map_or(false, |c| c.lock().unwrap().level_accessible(boot_level as usize))
+            .map_or(false, |c| c.lock().unwrap().level_accessible(boot_level))
     }
 
     pub fn forget_all_keys_for_user(&mut self, user: UserId) {
@@ -385,7 +386,7 @@ impl SuperKeyManager {
                 .data
                 .boot_level_key_cache
                 .as_ref()
-                .map(|b| b.lock().unwrap().aes_key(*level as usize))
+                .map(|b| b.lock().unwrap().aes_key(*level))
                 .transpose()
                 .context(ks_err!("aes_key failed"))?
                 .flatten()
