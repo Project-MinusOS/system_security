@@ -45,6 +45,7 @@ use android_security_metrics::aidl::android::security::metrics::{
     SecurityLevel::SecurityLevel as MetricsSecurityLevel, Storage::Storage as MetricsStorage,
 };
 use anyhow::{anyhow, Context, Result};
+use log::{error, warn};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -155,7 +156,7 @@ impl MetricsStore {
                 *atom_count += 1;
             } else {
                 // This is a rare case, if at all.
-                log::error!("In insert_atom: Maximum storage limit reached for overflow atom.")
+                error!("In insert_atom: Maximum storage limit reached for overflow atom.")
             }
         }
     }
@@ -553,7 +554,7 @@ pub(crate) fn pull_storage_stats() -> Result<Vec<KeystoreAtom>> {
                 ..Default::default()
             }),
             Err(error) => {
-                log::error!("pull_metrics_callback: Error getting storage stat: {}", error)
+                error!("pull_metrics_callback: Error getting storage stat: {error}")
             }
         };
     };
@@ -596,7 +597,7 @@ pub fn update_keystore_crash_sysprop() {
         // Proceed to write the system property with value 0.
         Ok(None) => 0,
         Err(error) => {
-            log::warn!(
+            warn!(
                 concat!(
                     "In update_keystore_crash_sysprop: ",
                     "Failed to read the existing system property due to: {:?}.",
@@ -611,7 +612,7 @@ pub fn update_keystore_crash_sysprop() {
     if let Err(e) =
         rustutils::system_properties::write(KEYSTORE_CRASH_COUNT_PROPERTY, &new_count.to_string())
     {
-        log::error!(
+        error!(
             concat!(
                 "In update_keystore_crash_sysprop:: ",
                 "Failed to write the system property due to error: {:?}"

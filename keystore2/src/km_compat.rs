@@ -28,6 +28,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     KeyParameterValue::KeyParameterValue, KeyPurpose::KeyPurpose, SecurityLevel::SecurityLevel,
     Tag::Tag,
 };
+use log::error;
 use android_security_compat::aidl::android::security::compat::IKeystoreCompatService::IKeystoreCompatService;
 use anyhow::Context;
 use keystore2_crypto::{hmac_sha256, HMAC_SHA256_LEN};
@@ -111,7 +112,7 @@ pub fn unwrap_keyblob(keyblob: &[u8]) -> KeyBlob {
     let got_tag = match hmac_sha256(KEYBLOB_HMAC_KEY, inner_keyblob) {
         Ok(tag) => tag,
         Err(e) => {
-            log::error!("Error calculating HMAC-SHA256 for keyblob unwrap: {:?}", e);
+            error!("Error calculating HMAC-SHA256 for keyblob unwrap: {e:?}");
             return KeyBlob::Raw(keyblob);
         }
     };

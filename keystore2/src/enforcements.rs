@@ -39,6 +39,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     OperationChallenge::OperationChallenge,
 };
 use anyhow::{Context, Result};
+use log::{error, info};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -222,10 +223,7 @@ fn get_timestamp_token(challenge: Challenge) -> Result<TimeStampToken, Error> {
 
 fn timestamp_token_request(challenge: Challenge, sender: Sender<Result<TimeStampToken, Error>>) {
     if let Err(e) = sender.send(get_timestamp_token(challenge)) {
-        log::info!(
-            concat!("Receiver hung up ", "before timestamp token could be delivered. {:?}"),
-            e
-        );
+        info!("Receiver hung up before timestamp token could be delivered. {e:?}");
     }
 }
 
@@ -281,10 +279,9 @@ impl AuthInfo {
                         Ok(t) => confirmation_token = Some(t),
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
-                            log::error!(concat!(
-                                "We got disconnected from the APC service, ",
-                                "this should never happen."
-                            ));
+                            error!(
+                                "We got disconnected from the APC service, this should never happen."
+                            );
                             break;
                         }
                     }

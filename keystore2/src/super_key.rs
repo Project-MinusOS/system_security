@@ -44,6 +44,7 @@ use keystore2_crypto::{
     aes_gcm_decrypt, aes_gcm_encrypt, generate_aes256_key, generate_salt, Password, ZVec,
     AES_256_KEY_LENGTH,
 };
+use log::{error, info, warn};
 use rustutils::system_properties::PropertyWatcher;
 use std::{
     collections::HashMap,
@@ -298,18 +299,18 @@ impl SuperKeyManager {
     pub fn set_up_boot_level_cache(skm: &Arc<RwLock<Self>>, db: &mut KeystoreDB) -> Result<()> {
         let mut skm_guard = skm.write().unwrap();
         if skm_guard.data.boot_level_key_cache.is_some() {
-            log::info!("In set_up_boot_level_cache: called for a second time");
+            info!("In set_up_boot_level_cache: called for a second time");
             return Ok(());
         }
         let level_zero_key =
             get_level_zero_key(db).context(ks_err!("get_level_zero_key failed"))?;
         skm_guard.data.boot_level_key_cache =
             Some(Mutex::new(BootLevelKeyCache::new(level_zero_key)));
-        log::info!("Starting boot level watcher.");
+        info!("Starting boot level watcher.");
         let clone = skm.clone();
         std::thread::spawn(move || {
             Self::watch_boot_level(clone)
-                .unwrap_or_else(|e| log::error!("watch_boot_level failed:\n{:?}", e));
+                .unwrap_or_else(|e| error!("watch_boot_level failed: {e:?}"));
         });
         Ok(())
     }
@@ -337,12 +338,12 @@ impl SuperKeyManager {
                     .get_mut()
                     .unwrap();
                 if level < MAX_MAX_BOOT_LEVEL {
-                    log::info!("Read keystore.boot_level value {level:?}");
+                    info!("Read keystore.boot_level value {level:?}");
                     boot_level_key_cache
                         .advance_boot_level(level)
                         .context(ks_err!("advance_boot_level failed"))?;
                 } else {
-                    log::info!(
+                    info!(
                         "keystore.boot_level {level:?} hits maximum {MAX_MAX_BOOT_LEVEL:?}, finishing.",
                     );
                     boot_level_key_cache.finish();
@@ -748,7 +749,7 @@ impl SuperKeyManager {
         password: &Password,
         reencrypt_with: Option<Arc<SuperKey>>,
     ) -> Result<Arc<SuperKey>> {
-        log::info!("Creating {} for user {}", key_type.name, user_id);
+        info!("Creating {} for user {user_id}", key_type.name);
         let (super_key, public_key) = match key_type.algorithm {
             SuperEncryptionAlgorithm::Aes256Gcm => {
                 (generate_aes256_key().context(ks_err!("Failed to generate AES-256 key."))?, None)
@@ -931,7 +932,7 @@ impl SuperKeyManager {
                 Ok(())
             })();
             if let Err(e) = res {
-                log::error!("Error setting up biometric unlock: {:#?}", e);
+                error!("Error setting up biometric unlock: {e:#?}");
                 // The caller can't do anything about the error, and for security reasons we still
                 // wipe the keys (unless a weak unlock method is enabled).  So just log the error.
             }
@@ -971,7 +972,7 @@ impl SuperKeyManager {
             (true, false) => "retained in plaintext",
             (true, true) => "retained in plaintext, with biometric-encrypted copy too",
         };
-        log::info!("UnlockedDeviceRequired super keys for user {user_id} are {status}.");
+        info!("UnlockedDeviceRequired super keys for user {user_id} are {status}.");
     }
 
     /// User has unlocked, not using a password. See if any of our stored auth tokens can be used
@@ -1034,7 +1035,7 @@ impl SuperKeyManager {
                             entry.unlocked_device_required_private = Some(private.clone());
                             self.data.add_key_to_key_index(&symmetric)?;
                             self.data.add_key_to_key_index(&private)?;
-                            log::info!("Successfully unlocked user {user_id} with biometric {sid}",);
+                            info!("Successfully unlocked user {user_id} with biometric {sid}",);
                             return Ok(());
                         }
                         Err(e) => {
@@ -1045,9 +1046,9 @@ impl SuperKeyManager {
                 }
             }
             if !errs.is_empty() {
-                log::warn!("biometric unlock failed for all SIDs, with errors:");
+                warn!("biometric unlock failed for all SIDs, with errors:");
                 for (sid, err) in errs {
-                    log::warn!("  biometric {sid}: {err}");
+                    warn!("  biometric {sid}: {err}");
                 }
             }
         }
@@ -1088,7 +1089,7 @@ impl SuperKeyManager {
         legacy_importer: &LegacyImporter,
         user_id: UserId,
     ) -> Result<()> {
-        log::info!("remove_user(user={user_id})");
+        info!("remove_user(user={user_id})");
         // Mark keys created on behalf of the user as unreferenced.
         legacy_importer
             .bulk_delete_user(user_id, false)
@@ -1113,7 +1114,7 @@ impl SuperKeyManager {
     ) -> Result<()> {
         // Create the AfterFirstUnlock super key.
         if self.super_key_exists_in_db_for_user(db, legacy_importer, user_id)? {
-            log::info!("AfterFirstUnlock super key already exists");
+            info!("AfterFirstUnlock super key already exists");
             if !allow_existing {
                 return Err(Error::sys()).context(ks_err!("Tried to re-init an initialized user!"));
             }
@@ -1147,7 +1148,7 @@ impl SuperKeyManager {
         user_id: UserId,
         password: &Password,
     ) -> Result<()> {
-        log::info!("unlock_user(user={user_id})");
+        info!("unlock_user(user={user_id})");
         match self.get_user_state(db, legacy_importer, user_id)? {
             UserState::AfterFirstUnlock(_) => {
                 self.unlock_unlocked_device_required_keys(db, user_id, password)

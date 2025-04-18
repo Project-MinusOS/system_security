@@ -69,13 +69,9 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor,
 };
 use anyhow::{anyhow, Context, Result};
-use keystore2_flags;
-use std::{convert::TryFrom, convert::TryInto, ops::Deref, sync::LazyLock, time::SystemTimeError};
-use utils as db_utils;
-use utils::SqlField;
-
 use keystore2_crypto::ZVec;
-use log::error;
+use keystore2_flags;
+use log::{error, info};
 #[cfg(not(test))]
 use rand::prelude::random;
 use rusqlite::{
@@ -86,13 +82,15 @@ use rusqlite::{
     types::{FromSqlError, Value, ValueRef},
     Connection, OptionalExtension, ToSql, Transaction,
 };
-
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, SystemTime},
 };
+use std::{convert::TryFrom, convert::TryInto, ops::Deref, sync::LazyLock, time::SystemTimeError};
+use utils as db_utils;
+use utils::SqlField;
 
 use TransactionBehavior::Immediate;
 
@@ -988,7 +986,7 @@ impl KeystoreDB {
             .context("Trying to prepare query to mark superseded keyblobs")?;
         stmt.execute(params![BlobState::Superseded, sc_key_blob, sc_key_blob])
             .context(ks_err!("Failed to set state=superseded state for keyblobs"))?;
-        log::info!("marked non-current blobentry rows for keyblobs as superseded");
+        info!("marked non-current blobentry rows for keyblobs as superseded");
 
         // Mark keyblobs that don't have a corresponding key.
         // This may take a while if there are excessive numbers of keys in the database.
@@ -1003,7 +1001,7 @@ impl KeystoreDB {
             .context("Trying to prepare query to mark orphaned keyblobs")?;
         stmt.execute(params![BlobState::Orphaned, sc_key_blob])
             .context(ks_err!("Failed to set state=orphaned for keyblobs"))?;
-        log::info!("marked orphaned blobentry rows for keyblobs");
+        info!("marked orphaned blobentry rows for keyblobs");
 
         // Add an index to make it fast to find out of date blobentry rows.
         let _wp = wd::watch("KeystoreDB::from_1_to_2 add blobentry index");
@@ -2714,7 +2712,7 @@ impl KeystoreDB {
                     num_unbound += 1;
                 }
             }
-            log::info!("Deleting {num_unbound} auth-bound keys for user {user_id}");
+            info!("Deleting {num_unbound} auth-bound keys for user {user_id}");
             Ok(()).do_gc(notify_gc)
         })
         .context(ks_err!())

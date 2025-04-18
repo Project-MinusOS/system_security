@@ -46,6 +46,7 @@ use android_security_compat::aidl::android::security::compat::IKeystoreCompatSer
 use anyhow::{Context, Result};
 use binder::FromIBinder;
 use binder::{get_declared_instances, is_declared};
+use log::{error, info};
 use rustutils::system_properties::PropertyWatcher;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -71,20 +72,18 @@ pub fn create_thread_local_db() -> KeystoreDB {
     let mut db = match result {
         Ok(db) => db,
         Err(e) => {
-            log::error!("Failed to open Keystore database at {db_path:?}: {e:?}");
-            log::error!("Has /data been mounted correctly?");
+            error!("Failed to open Keystore database at {db_path:?}: {e:?}");
+            error!("Has /data been mounted correctly?");
             panic!("Failed to open database for Keystore, cannot continue: {e:?}")
         }
     };
 
     DB_INIT.call_once(|| {
-        log::info!("Touching Keystore 2.0 database for this first time since boot.");
-        log::info!("Calling cleanup leftovers.");
+        info!("Touching Keystore 2.0 database for this first time since boot.");
+        info!("Calling cleanup leftovers.");
         let n = db.cleanup_leftovers().expect("Failed to cleanup database on startup");
         if n != 0 {
-            log::info!(
-                "Cleaned up {n} failed entries, indicating keystore crash on key generation"
-            );
+            info!("Cleaned up {n} failed entries, indicating keystore crash on key generation");
         }
     });
     db
@@ -279,19 +278,15 @@ fn connect_keymint(
     let keymint = match hal_version {
         Some(400) | Some(300) | Some(200) => {
             // KeyMint v2+: use as-is (we don't have any software emulation of v3 or v4-specific KeyMint features).
-            log::info!(
-                "KeyMint device is current version ({:?}) for security level: {:?}",
-                hal_version,
-                security_level
+            info!(
+                "KeyMint device is current version ({hal_version:?}) for security level: {security_level:?}",
             );
             keymint
         }
         Some(100) => {
             // KeyMint v1: perform software emulation.
-            log::info!(
-                "Add emulation wrapper around {:?} device for security level: {:?}",
-                hal_version,
-                security_level
+            info!(
+                "Add emulation wrapper around {hal_version:?} device for security level: {security_level:?}",
             );
             BacklevelKeyMintWrapper::wrap(KeyMintV1::new(*security_level), keymint)
                 .context(ks_err!("Trying to create V1 compatibility wrapper."))?
@@ -300,18 +295,15 @@ fn connect_keymint(
             // Compatibility wrapper around a KeyMaster device: this roughly
             // behaves like KeyMint V1 (e.g. it includes AGREE_KEY support,
             // albeit in software.)
-            log::info!(
-                "Add emulation wrapper around Keymaster device for security level: {:?}",
-                security_level
+            info!(
+                "Add emulation wrapper around Keymaster device for security level: {security_level:?}",
             );
             BacklevelKeyMintWrapper::wrap(KeyMintV1::new(*security_level), keymint)
                 .context(ks_err!("Trying to create km_compat V1 compatibility wrapper ."))?
         }
         _ => {
             return Err(Error::Km(ErrorCode::HARDWARE_TYPE_UNAVAILABLE)).context(ks_err!(
-                "unexpected hal_version {:?} for security level: {:?}",
-                hal_version,
-                security_level
+                "unexpected hal_version {hal_version:?} for {security_level:?}",
             ));
         }
     };
@@ -471,14 +463,14 @@ pub fn await_boot_completed() {
     // boots, which on a very slow device (e.g., emulator for a non-native architecture) can
     // take minutes. Blocking here would be unexpected only if it never finishes.
     let _wp = wd::watch_millis("await_boot_completed", 300_000);
-    log::info!("monitoring for sys.boot_completed=1");
+    info!("monitoring for sys.boot_completed=1");
     while let Err(e) = watch_for_boot_completed() {
-        log::error!("failed to watch for boot_completed: {e:?}");
+        error!("failed to watch for boot_completed: {e:?}");
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
 
     BOOT_COMPLETED.store(true, Ordering::Release);
-    log::info!("wait_for_boot_completed done, triggering GC");
+    info!("wait_for_boot_completed done, triggering GC");
 
     // Garbage collection may have been skipped until now, so trigger a check.
     GC.notify_gc();

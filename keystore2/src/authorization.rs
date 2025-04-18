@@ -35,6 +35,7 @@ use android_system_keystore2::aidl::android::system::keystore2::ResponseCode::Re
 use anyhow::{Context, Result};
 use keystore2_crypto::Password;
 use keystore2_selinux as selinux;
+use log::{error, info};
 
 /// This is the Authorization error type, it wraps binder exceptions and the
 /// Authorization ResponseCode
@@ -60,7 +61,7 @@ pub enum Error {
 ///
 /// All non `Error` error conditions get mapped onto ResponseCode::SYSTEM_ERROR`.
 pub fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
-    log::error!("{:#?}", e);
+    error!("{e:#?}");
     let root_cause = e.root_cause();
     if let Some(KeystoreError::Rc(ks_rcode)) = root_cause.downcast_ref::<KeystoreError>() {
         let rc = match *ks_rcode {
@@ -109,7 +110,7 @@ impl AuthorizationManager {
         check_keystore_permission(KeystorePerm::AddAuth)
             .context(ks_err!("caller missing AddAuth permissions"))?;
 
-        log::info!(
+        info!(
             "add_auth_token(challenge={}, userId={}, authId={}, authType={:#x}, timestamp={}ms)",
             auth_token.challenge,
             auth_token.userId,
@@ -123,11 +124,7 @@ impl AuthorizationManager {
     }
 
     fn on_device_unlocked(&self, user_id: i32, password: Option<Password>) -> Result<()> {
-        log::info!(
-            "on_device_unlocked(user_id={}, password.is_some()={})",
-            user_id,
-            password.is_some(),
-        );
+        info!("on_device_unlocked(user_id={user_id}, password.is_some()={})", password.is_some());
         check_keystore_permission(KeystorePerm::Unlock)
             .context(ks_err!("caller missing Unlock permissions"))?;
         ENFORCEMENTS.set_device_locked(user_id, false);
@@ -150,11 +147,8 @@ impl AuthorizationManager {
         unlocking_sids: &[i64],
         weak_unlock_enabled: bool,
     ) -> Result<()> {
-        log::info!(
-            "on_device_locked(user_id={}, unlocking_sids={:?}, weak_unlock_enabled={})",
-            user_id,
-            unlocking_sids,
-            weak_unlock_enabled
+        info!(
+            "on_device_locked(user_id={user_id}, unlocking_sids={unlocking_sids:?}, weak_unlock_enabled={weak_unlock_enabled})",
         );
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
@@ -172,7 +166,7 @@ impl AuthorizationManager {
     }
 
     fn on_weak_unlock_methods_expired(&self, user_id: i32) -> Result<()> {
-        log::info!("on_weak_unlock_methods_expired(user_id={})", user_id);
+        info!("on_weak_unlock_methods_expired(user_id={user_id})");
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
         SUPER_KEY.write().unwrap().wipe_plaintext_unlocked_device_required_keys(user_id as u32);
@@ -180,7 +174,7 @@ impl AuthorizationManager {
     }
 
     fn on_non_lskf_unlock_methods_expired(&self, user_id: i32) -> Result<()> {
-        log::info!("on_non_lskf_unlock_methods_expired(user_id={})", user_id);
+        info!("on_non_lskf_unlock_methods_expired(user_id={user_id})");
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
         SUPER_KEY.write().unwrap().wipe_all_unlocked_device_required_keys(user_id as u32);
