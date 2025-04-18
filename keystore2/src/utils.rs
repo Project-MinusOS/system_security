@@ -56,6 +56,14 @@ use std::time::Duration;
 #[cfg(test)]
 mod tests;
 
+/// A secure user ID ("sid") corresponding to an `AndroidUserId` that has been registered with a
+/// secure authenticator instance.
+///
+/// The underlying integer type is `i64` to match the AIDL `long` types used in authenticator
+/// HALs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SecureUserId(pub i64);
+
 /// A per-operation authentication challenge value.
 ///
 /// The underlying integer type is `i64` to match the AIDL `long` type that is:

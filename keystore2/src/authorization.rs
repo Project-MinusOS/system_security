@@ -19,7 +19,7 @@ use crate::error::Error as KeystoreError;
 use crate::globals::{DB, ENFORCEMENTS, LEGACY_IMPORTER, SUPER_KEY};
 use crate::ks_err;
 use crate::permission::KeystorePerm;
-use crate::utils::{check_keystore_permission, watchdog as wd, Challenge};
+use crate::utils::{check_keystore_permission, watchdog as wd, Challenge, SecureUserId};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     HardwareAuthToken::HardwareAuthToken, HardwareAuthenticatorType::HardwareAuthenticatorType,
 };
@@ -144,7 +144,7 @@ impl AuthorizationManager {
     fn on_device_locked(
         &self,
         user_id: i32,
-        unlocking_sids: &[i64],
+        unlocking_sids: &[SecureUserId],
         weak_unlock_enabled: bool,
     ) -> Result<()> {
         info!(
@@ -184,7 +184,7 @@ impl AuthorizationManager {
     fn get_auth_tokens_for_credstore(
         &self,
         challenge: Challenge,
-        secure_user_id: i64,
+        sid: SecureUserId,
         auth_token_max_age_millis: i64,
     ) -> Result<AuthorizationTokens> {
         // Check permission. Function should return if this failed. Therefore having '?' at the end
@@ -199,13 +199,13 @@ impl AuthorizationManager {
         }
         // Obtain the auth token and the timestamp token from the enforcement module.
         let (auth_token, ts_token) =
-            ENFORCEMENTS.get_auth_tokens(challenge, secure_user_id, auth_token_max_age_millis)?;
+            ENFORCEMENTS.get_auth_tokens(challenge, sid, auth_token_max_age_millis)?;
         Ok(AuthorizationTokens { authToken: auth_token, timestampToken: ts_token })
     }
 
     fn get_last_auth_time(
         &self,
-        secure_user_id: i64,
+        sid: SecureUserId,
         auth_types: &[HardwareAuthenticatorType],
     ) -> Result<i64> {
         // Check keystore permission.
@@ -214,7 +214,7 @@ impl AuthorizationManager {
 
         let mut max_time: i64 = -1;
         for auth_type in auth_types.iter() {
-            if let Some(time) = ENFORCEMENTS.get_last_auth_time(secure_user_id, *auth_type) {
+            if let Some(time) = ENFORCEMENTS.get_last_auth_time(sid, *auth_type) {
                 if time.milliseconds() > max_time {
                     max_time = time.milliseconds();
                 }
@@ -249,8 +249,9 @@ impl IKeystoreAuthorization for AuthorizationManager {
         unlocking_sids: &[i64],
         weak_unlock_enabled: bool,
     ) -> BinderResult<()> {
+        let unlocking_sids: Vec<_> = unlocking_sids.iter().map(|sid| SecureUserId(*sid)).collect();
         let _wp = wd::watch("IKeystoreAuthorization::onDeviceLocked");
-        self.on_device_locked(user_id, unlocking_sids, weak_unlock_enabled)
+        self.on_device_locked(user_id, &unlocking_sids, weak_unlock_enabled)
             .map_err(into_logged_binder)
     }
 
@@ -270,9 +271,10 @@ impl IKeystoreAuthorization for AuthorizationManager {
         secure_user_id: i64,
         auth_token_max_age_millis: i64,
     ) -> binder::Result<AuthorizationTokens> {
+        let sid = SecureUserId(secure_user_id);
         let challenge = Challenge(challenge);
         let _wp = wd::watch("IKeystoreAuthorization::getAuthTokensForCredStore");
-        self.get_auth_tokens_for_credstore(challenge, secure_user_id, auth_token_max_age_millis)
+        self.get_auth_tokens_for_credstore(challenge, sid, auth_token_max_age_millis)
             .map_err(into_logged_binder)
     }
 
@@ -281,6 +283,7 @@ impl IKeystoreAuthorization for AuthorizationManager {
         secure_user_id: i64,
         auth_types: &[HardwareAuthenticatorType],
     ) -> binder::Result<i64> {
-        self.get_last_auth_time(secure_user_id, auth_types).map_err(into_logged_binder)
+        let sid = SecureUserId(secure_user_id);
+        self.get_last_auth_time(sid, auth_types).map_err(into_logged_binder)
     }
 }

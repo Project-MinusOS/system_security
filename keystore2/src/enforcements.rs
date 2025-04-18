@@ -23,7 +23,7 @@ use crate::{
     boot_level_keys::BootLevel,
     database::{AuthTokenEntry, BootTime},
     globals::SUPER_KEY,
-    utils::Challenge,
+    utils::{Challenge, SecureUserId},
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, ErrorCode::ErrorCode as Ec, HardwareAuthToken::HardwareAuthToken,
@@ -451,7 +451,7 @@ impl Enforcements {
         let mut no_auth_required: bool = false;
         let mut caller_nonce_allowed = false;
         let mut user_id: i32 = -1;
-        let mut user_secure_ids = Vec::<i64>::new();
+        let mut user_sids = Vec::<SecureUserId>::new();
         let mut key_time_out: Option<i64> = None;
         let mut unlocked_device_required = false;
         let mut key_usage_limited: Option<i64> = None;
@@ -501,7 +501,7 @@ impl Enforcements {
                     }
                 }
                 KeyParameterValue::UserSecureID(s) => {
-                    user_secure_ids.push(*s);
+                    user_sids.push(SecureUserId(*s));
                 }
                 KeyParameterValue::UserID(u) => {
                     user_id = *u;
@@ -537,19 +537,17 @@ impl Enforcements {
         }
 
         // if both NO_AUTH_REQUIRED and USER_SECURE_ID tags are present, return error
-        if !user_secure_ids.is_empty() && no_auth_required {
+        if !user_sids.is_empty() && no_auth_required {
             return Err(Error::Km(Ec::INVALID_KEY_BLOB))
                 .context(ks_err!("key has both NO_AUTH_REQUIRED and USER_SECURE_ID tags."));
         }
 
         // if either of auth_type or secure_id is present and the other is not present, return error
-        if (user_auth_type.is_some() && user_secure_ids.is_empty())
-            || (user_auth_type.is_none() && !user_secure_ids.is_empty())
+        if (user_auth_type.is_some() && user_sids.is_empty())
+            || (user_auth_type.is_none() && !user_sids.is_empty())
         {
             return Err(Error::Km(Ec::KEY_USER_NOT_AUTHENTICATED)).context(ks_err!(
-                "Auth required, but auth type {:?} + sids {:?} inconsistently specified",
-                user_auth_type,
-                user_secure_ids,
+                "Auth required, but auth type {user_auth_type:?} + {user_sids:?} inconsistently specified"
             ));
         }
 
@@ -577,19 +575,16 @@ impl Enforcements {
             }
         }
 
-        let (hat, state) = if user_secure_ids.is_empty() {
+        let (hat, state) = if user_sids.is_empty() {
             (None, DeferredAuthState::NoAuthRequired)
         } else if let Some(key_time_out) = key_time_out {
             let hat = Self::find_auth_token(|hat: &AuthTokenEntry| match user_auth_type {
-                Some(auth_type) => hat.satisfies(&user_secure_ids, auth_type),
+                Some(auth_type) => hat.satisfies(&user_sids, auth_type),
                 None => false, // not reachable due to earlier check
             })
             .ok_or(Error::Km(Ec::KEY_USER_NOT_AUTHENTICATED))
             .context(ks_err!(
-                "No suitable auth token for sids {:?} type {:?} received in last {}s found.",
-                user_secure_ids,
-                user_auth_type,
-                key_time_out
+                "No suitable auth token for {user_sids:?} type {user_auth_type:?} received in last {key_time_out}s found",
             ))?;
             let now = BootTime::now();
             let token_age =
@@ -610,7 +605,7 @@ impl Enforcements {
                     hat.auth_token().authenticatorType.0,
                     hat.auth_token().timestamp.milliSeconds,
                     hat.time_received(),
-                    user_secure_ids,
+                    user_sids,
                     user_auth_type,
                     token_age.seconds(),
                     key_time_out
@@ -725,21 +720,21 @@ impl Enforcements {
 
     /// Finds a matching auth token along with a timestamp token.
     /// This method looks through auth-tokens cached by keystore which satisfy the given
-    /// authentication information (i.e. |secureUserId|).
-    /// The most recent matching auth token which has a |challenge| field which matches
-    /// the passed-in |challenge| parameter is returned.
-    /// In this case the |authTokenMaxAgeMillis| parameter is not used.
+    /// authentication information (i.e. `SecureUserId`).
+    /// The most recent matching auth token which has a `challenge` field which matches
+    /// the passed-in `challenge` parameter is returned.
+    /// In this case the `auth_token_max_age_millis` parameter is not used.
     ///
-    /// Otherwise, the most recent matching auth token which is younger than |authTokenMaxAgeMillis|
-    /// is returned.
+    /// Otherwise, the most recent matching auth token which is younger than
+    /// `auth_token_max_age_millis` is returned.
     pub fn get_auth_tokens(
         &self,
         challenge: Challenge,
-        secure_user_id: i64,
+        sid: SecureUserId,
         auth_token_max_age_millis: i64,
     ) -> Result<(HardwareAuthToken, TimeStampToken)> {
         let auth_type = HardwareAuthenticatorType::ANY;
-        let sids: Vec<i64> = vec![secure_user_id];
+        let sids: Vec<SecureUserId> = vec![sid];
         // Filter the matching auth tokens by challenge
         let result = Self::find_auth_token(|hat: &AuthTokenEntry| {
             (challenge == hat.challenge()) && hat.satisfies(&sids, auth_type)
@@ -784,13 +779,11 @@ impl Enforcements {
     /// Finds the most recent received time for an auth token that matches the given secure user id and authenticator
     pub fn get_last_auth_time(
         &self,
-        secure_user_id: i64,
+        sid: SecureUserId,
         auth_type: HardwareAuthenticatorType,
     ) -> Option<BootTime> {
-        let sids: Vec<i64> = vec![secure_user_id];
-
         let result =
-            Self::find_auth_token(|entry: &AuthTokenEntry| entry.satisfies(&sids, auth_type));
+            Self::find_auth_token(|entry: &AuthTokenEntry| entry.satisfies(&[sid], auth_type));
 
         result.map(|auth_token_entry| auth_token_entry.time_received())
     }

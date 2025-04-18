@@ -28,7 +28,7 @@ use crate::{
     ks_err,
     legacy_importer::LegacyImporter,
     raw_device::KeyMintDevice,
-    utils::{watchdog as wd, AesGcm, AID_KEYSTORE},
+    utils::{watchdog as wd, AesGcm, SecureUserId, AID_KEYSTORE},
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, HardwareAuthToken::HardwareAuthToken,
@@ -245,7 +245,7 @@ impl LockedKey {
 /// information about that biometric-bound key.
 struct BiometricUnlock {
     /// List of auth token SIDs that are accepted by the encrypting biometric-bound key.
-    sids: Vec<i64>,
+    sids: Vec<SecureUserId>,
     /// Key descriptor of the encrypting biometric-bound key.
     key_desc: KeyDescriptor,
     /// The UnlockedDeviceRequired super keys, encrypted with a biometric-bound key.
@@ -875,7 +875,7 @@ impl SuperKeyManager {
         &mut self,
         db: &mut KeystoreDB,
         user_id: UserId,
-        unlocking_sids: &[i64],
+        unlocking_sids: &[SecureUserId],
         weak_unlock_enabled: bool,
     ) {
         let entry = self.data.user_keys.entry(user_id).or_default();
@@ -909,7 +909,7 @@ impl SuperKeyManager {
                     ),
                 ];
                 for sid in unlocking_sids {
-                    key_params.push(KeyParameterValue::UserSecureID(*sid));
+                    key_params.push(KeyParameterValue::UserSecureID(sid.0));
                 }
                 let key_params: Vec<KmKeyParameter> =
                     key_params.into_iter().map(|x| x.into()).collect();
@@ -1008,7 +1008,8 @@ impl SuperKeyManager {
             for sid in &biometric.sids {
                 let sid = *sid;
                 if let Some(auth_token_entry) = db.find_auth_token_entry(|entry| {
-                    entry.auth_token().userId == sid || entry.auth_token().authenticatorId == sid
+                    entry.auth_token().userId == sid.0
+                        || entry.auth_token().authenticatorId == sid.0
                 }) {
                     let res: Result<(Arc<SuperKey>, Arc<SuperKey>)> = (|| {
                         let symmetric = biometric.symmetric.decrypt(
@@ -1035,7 +1036,7 @@ impl SuperKeyManager {
                             entry.unlocked_device_required_private = Some(private.clone());
                             self.data.add_key_to_key_index(&symmetric)?;
                             self.data.add_key_to_key_index(&private)?;
-                            info!("Successfully unlocked user {user_id} with biometric {sid}",);
+                            info!("Successfully unlocked user {user_id} with biometric {sid:?}");
                             return Ok(());
                         }
                         Err(e) => {
@@ -1048,7 +1049,7 @@ impl SuperKeyManager {
             if !errs.is_empty() {
                 warn!("biometric unlock failed for all SIDs, with errors:");
                 for (sid, err) in errs {
-                    warn!("  biometric {sid}: {err}");
+                    warn!("  biometric {sid:?}: {err}");
                 }
             }
         }

@@ -25,7 +25,7 @@ use crate::permission::{KeyPerm, KeystorePerm};
 use crate::super_key::SuperKeyManager;
 use crate::utils::{
     check_dump_permission, check_get_app_uids_affected_by_sid_permissions, check_key_permission,
-    check_keystore_permission, uid_to_android_user, watchdog as wd,
+    check_keystore_permission, uid_to_android_user, watchdog as wd, SecureUserId
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     ErrorCode::ErrorCode, IKeyMintDevice::IKeyMintDevice, KeyParameter::KeyParameter, KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
@@ -399,16 +399,13 @@ impl Maintenance {
         Maintenance::call_on_all_security_levels("deleteAllKeys", |dev| dev.deleteAllKeys(), None)
     }
 
-    fn get_app_uids_affected_by_sid(
-        user_id: i32,
-        secure_user_id: i64,
-    ) -> Result<std::vec::Vec<i64>> {
+    fn get_app_uids_affected_by_sid(user_id: i32, sid: SecureUserId) -> Result<std::vec::Vec<i64>> {
         // This method is intended to be called by Settings and discloses a list of apps
         // associated with a user, so it requires the "android.permission.MANAGE_USERS"
         // permission (to avoid leaking list of apps to unauthorized callers).
         check_get_app_uids_affected_by_sid_permissions().context(ks_err!())?;
-        DB.with(|db| db.borrow_mut().get_app_uids_affected_by_sid(user_id, secure_user_id))
-            .context(ks_err!("Failed to get app UIDs affected by SID"))
+        DB.with(|db| db.borrow_mut().get_app_uids_affected_by_sid(user_id, sid))
+            .context(ks_err!("Failed to get app UIDs affected by {sid:?}"))
     }
 
     fn dump_state(&self, f: &mut dyn std::io::Write) -> std::io::Result<()> {
@@ -441,6 +438,26 @@ impl Maintenance {
                 writeln!(f, "Attested module information not set")?;
                 writeln!(f)?;
             }
+        }
+
+        if keystore2_flags::count_keys_per_uid() {
+            // Display database top key counts per uid.
+            let max_uids = 10;
+            let min_count = 5;
+            writeln!(f, "Top-{max_uids} per-uid key counts (where > {min_count} keys):")?;
+            DB.with(|db| -> std::io::Result<()> {
+                let mut db = db.borrow_mut();
+                let counts = db.per_uid_counts(max_uids, min_count).unwrap_or_else(|e| {
+                    log::error!("failed to retrieve top {max_uids} per-uid counts: {e:?}");
+                    let _ = writeln!(f, "  DB retrieval failed: {e:?}");
+                    Vec::new()
+                });
+                for (uid, count) in counts {
+                    writeln!(f, "  uid={uid:<8}: key_count: {count}")?;
+                }
+                Ok(())
+            })?;
+            writeln!(f)?;
         }
 
         // Display database size information.
@@ -628,8 +645,9 @@ impl IKeystoreMaintenance for Maintenance {
         user_id: i32,
         secure_user_id: i64,
     ) -> BinderResult<std::vec::Vec<i64>> {
-        info!("getAppUidsAffectedBySid(secure_user_id={secure_user_id:?})");
+        let sid = SecureUserId(secure_user_id);
+        info!("getAppUidsAffectedBySid({user_id:?}, {sid:?})");
         let _wp = wd::watch("IKeystoreMaintenance::getAppUidsAffectedBySid");
-        Self::get_app_uids_affected_by_sid(user_id, secure_user_id).map_err(into_logged_binder)
+        Self::get_app_uids_affected_by_sid(user_id, sid).map_err(into_logged_binder)
     }
 }
