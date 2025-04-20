@@ -26,6 +26,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
 };
 use anyhow::{Context, Result};
 use keystore2_crypto::{hkdf_expand, ZVec, AES_256_KEY_LENGTH};
+use log::{error, info};
 use std::{collections::VecDeque, convert::TryFrom};
 
 /// Boot level value.
@@ -58,20 +59,20 @@ fn lookup_level_zero_km_and_strategy() -> Result<Option<(SecurityLevel, DenyLate
     let property_val = if let Some(p) = property_val {
         p
     } else {
-        log::info!("{} not set, inferring from installed KM instances", PROPERTY_NAME);
+        info!("{PROPERTY_NAME} not set, inferring from installed KM instances");
         return Ok(None);
     };
     let (level, strategy) = if let Some(c) = property_val.split_once(':') {
         c
     } else {
-        log::error!("Missing colon in {}: {:?}", PROPERTY_NAME, property_val);
+        error!("Missing colon in {PROPERTY_NAME}: {property_val:?}");
         return Ok(None);
     };
     let level = match level {
         "TRUSTED_ENVIRONMENT" => SecurityLevel::TRUSTED_ENVIRONMENT,
         "STRONGBOX" => SecurityLevel::STRONGBOX,
         _ => {
-            log::error!("Unknown security level in {}: {:?}", PROPERTY_NAME, level);
+            error!("Unknown security level in {PROPERTY_NAME}: {level:?}");
             return Ok(None);
         }
     };
@@ -79,11 +80,11 @@ fn lookup_level_zero_km_and_strategy() -> Result<Option<(SecurityLevel, DenyLate
         "EARLY_BOOT_ONLY" => DenyLaterStrategy::EarlyBootOnly,
         "MAX_USES_PER_BOOT" => DenyLaterStrategy::MaxUsesPerBoot,
         _ => {
-            log::error!("Unknown DenyLaterStrategy in {}: {:?}", PROPERTY_NAME, strategy);
+            error!("Unknown DenyLaterStrategy in {PROPERTY_NAME}: {strategy:?}");
             return Ok(None);
         }
     };
-    log::info!("Set from {}: {}", PROPERTY_NAME, property_val);
+    info!("Set from {PROPERTY_NAME}: {property_val}");
     Ok(Some((level, strategy)))
 }
 
@@ -116,7 +117,7 @@ fn get_level_zero_key_km_and_strategy() -> Result<(KeyMintDevice, DenyLaterStrat
 pub fn get_level_zero_key(db: &mut KeystoreDB) -> Result<ZVec> {
     let (km_dev, deny_later_strategy) = get_level_zero_key_km_and_strategy()
         .context(ks_err!("get preferred KM instance failed"))?;
-    log::info!(
+    info!(
         "In get_level_zero_key: security_level={:?}, deny_later_strategy={:?}",
         km_dev.security_level(),
         deny_later_strategy
@@ -142,18 +143,14 @@ pub fn get_level_zero_key(db: &mut KeystoreDB) -> Result<ZVec> {
         .lookup_or_generate_key(db, &key_desc, KeyType::Client, &params, |key_characteristics| {
             key_characteristics.iter().any(|kc| {
                 if kc.securityLevel != required_security_level {
-                    log::error!(
+                    error!(
                         "In get_level_zero_key: security level expected={:?} got={:?}",
-                        required_security_level,
-                        kc.securityLevel
+                        required_security_level, kc.securityLevel
                     );
                     return false;
                 }
                 if !kc.authorizations.iter().any(|a| a == &required_param) {
-                    log::error!(
-                        "In get_level_zero_key: required param absent {:?}",
-                        required_param
-                    );
+                    error!("In get_level_zero_key: required param {required_param:?} absent");
                     return false;
                 }
                 true
@@ -243,7 +240,7 @@ impl BootLevelKeyCache {
     /// that level and later.
     pub fn advance_boot_level(&mut self, new_boot_level: BootLevel) -> Result<()> {
         if !self.level_accessible(new_boot_level) {
-            log::error!(
+            error!(
                 "Failed to advance boot level to {new_boot_level:?}, current is {:?}, cache size {}",
                 self.current,
                 self.cache.len()

@@ -25,7 +25,7 @@ use crate::permission::{KeyPerm, KeystorePerm};
 use crate::super_key::SuperKeyManager;
 use crate::utils::{
     check_dump_permission, check_get_app_uids_affected_by_sid_permissions, check_key_permission,
-    check_keystore_permission, uid_to_android_user, watchdog as wd,
+    check_keystore_permission, uid_to_android_user, watchdog as wd, SecureUserId
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     ErrorCode::ErrorCode, IKeyMintDevice::IKeyMintDevice, KeyParameter::KeyParameter, KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
@@ -51,6 +51,7 @@ use der::{DerOrd, Encode, asn1::OctetString, asn1::SetOfVec, Sequence};
 use keystore2_crypto::Password;
 use rustutils::system_properties::PropertyWatcher;
 use std::cmp::Ordering;
+use log::{error, info, warn};
 
 /// Reexport Domain for the benefit of DeleteListener
 pub use android_system_keystore2::aidl::android::system::keystore2::Domain::Domain;
@@ -186,7 +187,7 @@ impl Maintenance {
 
         if let Some(min_version) = min_version {
             if hw_info.versionNumber < min_version {
-                log::info!("skipping {name} for {sec_level:?} since its keymint version {} is less than the minimum required version {min_version}", hw_info.versionNumber);
+                info!("skipping {name} for {sec_level:?} since its keymint version {} is less than the minimum required version {min_version}", hw_info.versionNumber);
                 return Ok(());
             }
         }
@@ -211,25 +212,18 @@ impl Maintenance {
         sec_levels.iter().try_fold((), |_result, (sec_level, sec_level_string)| {
             let curr_result = Maintenance::call_with_watchdog(*sec_level, name, &op, min_version);
             match curr_result {
-                Ok(()) => log::info!(
-                    "Call to {} succeeded for security level {}.",
-                    name,
-                    &sec_level_string
-                ),
+                Ok(()) => {
+                    info!("Call to {name} succeeded for security level {sec_level_string}");
+                }
                 Err(ref e) => {
                     if *sec_level == SecurityLevel::STRONGBOX
                         && e.downcast_ref::<Error>()
                             == Some(&Error::Km(ErrorCode::HARDWARE_TYPE_UNAVAILABLE))
                     {
-                        log::info!("Call to {} failed for StrongBox as it is not available", name);
+                        info!("Call to {name} failed for StrongBox as it is not available");
                         return Ok(());
                     } else {
-                        log::error!(
-                            "Call to {} failed for security level {}: {}.",
-                            name,
-                            &sec_level_string,
-                            e
-                        )
+                        error!("Call to {name} failed for security level {sec_level_string}: {e}")
                     }
                 }
             }
@@ -240,12 +234,12 @@ impl Maintenance {
     fn early_boot_ended() -> Result<()> {
         check_keystore_permission(KeystorePerm::EarlyBootEnded)
             .context(ks_err!("Checking permission"))?;
-        log::info!("In early_boot_ended.");
+        info!("In early_boot_ended.");
 
         if let Err(e) =
             DB.with(|db| SuperKeyManager::set_up_boot_level_cache(&SUPER_KEY, &mut db.borrow_mut()))
         {
-            log::error!("SUPER_KEY.set_up_boot_level_cache failed:\n{:?}\n:(", e);
+            error!("SUPER_KEY.set_up_boot_level_cache failed: {e:?}");
         }
         Maintenance::call_on_all_security_levels("earlyBootEnded", |dev| dev.earlyBootEnded(), None)
     }
@@ -264,21 +258,21 @@ impl Maintenance {
         if rustutils::system_properties::read_bool("keystore.module_hash.sent", false)
             .unwrap_or(false)
         {
-            log::info!("Module info has already been sent.");
+            info!("Module info has already been sent.");
             return;
         }
         if keystore2_flags::attest_modules() {
             std::thread::spawn(move || {
                 // Wait for apex info to be available before populating.
                 Self::watch_apex_info().unwrap_or_else(|e| {
-                    log::error!("failed to monitor apexd.status property: {e:?}");
+                    error!("failed to monitor apexd.status property: {e:?}");
                     panic!("Terminating due to inaccessibility of apexd.status property, blocking boot: {e:?}");
                 });
             });
         } else {
             rustutils::system_properties::write("keystore.module_hash.sent", "true")
                 .unwrap_or_else(|e| {
-                        log::error!("Failed to set keystore.module_hash.sent to true; this will therefore block boot: {e:?}");
+                        error!("Failed to set keystore.module_hash.sent to true; this will therefore block boot: {e:?}");
                         panic!("Crashing Keystore because it failed to set keystore.module_hash.sent to true (which blocks boot).");
                     }
                 );
@@ -291,19 +285,19 @@ impl Maintenance {
     /// Blocks waiting for system property changes, so must be run in its own thread.
     fn watch_apex_info() -> Result<()> {
         let apex_prop = "apexd.status";
-        log::info!("start monitoring '{apex_prop}' property");
+        info!("start monitoring '{apex_prop}' property");
         let mut w =
             PropertyWatcher::new(apex_prop).context(ks_err!("PropertyWatcher::new failed"))?;
         loop {
             let value = w.read(|_name, value| Ok(value.to_string()));
-            log::info!("property '{apex_prop}' is now '{value:?}'");
+            info!("property '{apex_prop}' is now '{value:?}'");
             if matches!(value.as_deref(), Ok("activated")) {
                 Self::read_and_set_module_info();
                 return Ok(());
             }
-            log::info!("await a change to '{apex_prop}'...");
+            info!("await a change to '{apex_prop}'...");
             w.wait(None).context(ks_err!("property wait failed"))?;
-            log::info!("await a change to '{apex_prop}'...notified");
+            info!("await a change to '{apex_prop}'...notified");
         }
     }
 
@@ -319,15 +313,15 @@ impl Maintenance {
     /// - the `keystore.module_hash.sent` property cannot be updated
     fn read_and_set_module_info() {
         let modules = Self::read_apex_info().unwrap_or_else(|e| {
-            log::error!("failed to read apex info: {e:?}");
+            error!("failed to read apex info: {e:?}");
             panic!("Terminating due to unavailability of apex info, blocking boot: {e:?}");
         });
         Self::set_module_info(modules).unwrap_or_else(|e| {
-            log::error!("failed to set module info: {e:?}");
+            error!("failed to set module info: {e:?}");
             panic!("Terminating due to KeyMint not accepting module info, blocking boot: {e:?}");
         });
         rustutils::system_properties::write("keystore.module_hash.sent", "true").unwrap_or_else(|e| {
-            log::error!("failed to set keystore.module_hash.sent property: {e:?}");
+            error!("failed to set keystore.module_hash.sent property: {e:?}");
             panic!("Terminating due to failure to set keystore.module_hash.sent property, blocking boot: {e:?}");
         });
     }
@@ -340,7 +334,7 @@ impl Maintenance {
         packages
             .into_iter()
             .map(|pkg| {
-                log::info!("apex modules += {} version {}", pkg.moduleName, pkg.versionCode);
+                info!("apex modules += {} version {}", pkg.moduleName, pkg.versionCode);
                 let name = OctetString::new(pkg.moduleName.as_bytes()).map_err(|e| {
                     anyhow!("failed to convert '{}' to OCTET_STRING: {e:?}", pkg.moduleName)
                 })?;
@@ -400,21 +394,18 @@ impl Maintenance {
         // Security critical permission check. This statement must return on fail.
         check_keystore_permission(KeystorePerm::DeleteAllKeys)
             .context(ks_err!("Checking permission"))?;
-        log::info!("In delete_all_keys.");
+        info!("In delete_all_keys.");
 
         Maintenance::call_on_all_security_levels("deleteAllKeys", |dev| dev.deleteAllKeys(), None)
     }
 
-    fn get_app_uids_affected_by_sid(
-        user_id: i32,
-        secure_user_id: i64,
-    ) -> Result<std::vec::Vec<i64>> {
+    fn get_app_uids_affected_by_sid(user_id: i32, sid: SecureUserId) -> Result<std::vec::Vec<i64>> {
         // This method is intended to be called by Settings and discloses a list of apps
         // associated with a user, so it requires the "android.permission.MANAGE_USERS"
         // permission (to avoid leaking list of apps to unauthorized callers).
         check_get_app_uids_affected_by_sid_permissions().context(ks_err!())?;
-        DB.with(|db| db.borrow_mut().get_app_uids_affected_by_sid(user_id, secure_user_id))
-            .context(ks_err!("Failed to get app UIDs affected by SID"))
+        DB.with(|db| db.borrow_mut().get_app_uids_affected_by_sid(user_id, sid))
+            .context(ks_err!("Failed to get app UIDs affected by {sid:?}"))
     }
 
     fn dump_state(&self, f: &mut dyn std::io::Write) -> std::io::Result<()> {
@@ -447,6 +438,26 @@ impl Maintenance {
                 writeln!(f, "Attested module information not set")?;
                 writeln!(f)?;
             }
+        }
+
+        if keystore2_flags::count_keys_per_uid() {
+            // Display database top key counts per uid.
+            let max_uids = 10;
+            let min_count = 5;
+            writeln!(f, "Top-{max_uids} per-uid key counts (where > {min_count} keys):")?;
+            DB.with(|db| -> std::io::Result<()> {
+                let mut db = db.borrow_mut();
+                let counts = db.per_uid_counts(max_uids, min_count).unwrap_or_else(|e| {
+                    log::error!("failed to retrieve top {max_uids} per-uid counts: {e:?}");
+                    let _ = writeln!(f, "  DB retrieval failed: {e:?}");
+                    Vec::new()
+                });
+                for (uid, count) in counts {
+                    writeln!(f, "  uid={uid:<8}: key_count: {count}")?;
+                }
+                Ok(())
+            })?;
+            writeln!(f)?;
         }
 
         // Display database size information.
@@ -487,7 +498,7 @@ impl Maintenance {
             let pragma_i32 = |f: &mut dyn std::io::Write, name| -> std::io::Result<()> {
                 let mut db = db.borrow_mut();
                 let value: i32 = db.pragma(name).unwrap_or_else(|e| {
-                    log::error!("unknown value for '{name}', failed: {e:?}");
+                    error!("unknown value for '{name}', failed: {e:?}");
                     -1
                 });
                 writeln!(f, "  {name} = {value}")
@@ -515,7 +526,7 @@ impl Maintenance {
     }
 
     fn set_module_info(module_info: Vec<ModuleInfo>) -> Result<()> {
-        log::info!("set_module_info with {} modules", module_info.len());
+        info!("set_module_info with {} modules", module_info.len());
         let encoding = Self::encode_module_info(module_info)
             .map_err(|e| anyhow!({ e }))
             .context(ks_err!("Failed to encode module_info"))?;
@@ -525,9 +536,7 @@ impl Maintenance {
             let mut saved = ENCODED_MODULE_INFO.write().unwrap();
             if let Some(saved_encoding) = &*saved {
                 if *saved_encoding == encoding {
-                    log::warn!(
-                        "Module info already set, ignoring repeated attempt to set same info."
-                    );
+                    warn!("Module info already set, ignoring repeated attempt to set same info.");
                     return Ok(());
                 }
                 return Err(Error::Rc(ResponseCode::INVALID_ARGUMENT)).context(ks_err!(
@@ -558,15 +567,15 @@ impl Interface for Maintenance {
         f: &mut dyn std::io::Write,
         _args: &[&std::ffi::CStr],
     ) -> Result<(), binder::StatusCode> {
-        log::info!("dump()");
+        info!("dump()");
         let _wp = wd::watch("IKeystoreMaintenance::dump");
         check_dump_permission().map_err(|_e| {
-            log::error!("dump permission denied");
+            error!("dump permission denied");
             binder::StatusCode::PERMISSION_DENIED
         })?;
 
         self.dump_state(f).map_err(|e| {
-            log::error!("dump_state failed: {e:?}");
+            error!("dump_state failed: {e:?}");
             binder::StatusCode::UNKNOWN_ERROR
         })
     }
@@ -574,7 +583,7 @@ impl Interface for Maintenance {
 
 impl IKeystoreMaintenance for Maintenance {
     fn onUserAdded(&self, user_id: i32) -> BinderResult<()> {
-        log::info!("onUserAdded(user={user_id})");
+        info!("onUserAdded(user={user_id})");
         let _wp = wd::watch("IKeystoreMaintenance::onUserAdded");
         self.add_or_remove_user(user_id).map_err(into_logged_binder)
     }
@@ -585,32 +594,32 @@ impl IKeystoreMaintenance for Maintenance {
         password: &[u8],
         allow_existing: bool,
     ) -> BinderResult<()> {
-        log::info!("initUserSuperKeys(user={user_id}, allow_existing={allow_existing})");
+        info!("initUserSuperKeys(user={user_id}, allow_existing={allow_existing})");
         let _wp = wd::watch("IKeystoreMaintenance::initUserSuperKeys");
         self.init_user_super_keys(user_id, password.into(), allow_existing)
             .map_err(into_logged_binder)
     }
 
     fn onUserRemoved(&self, user_id: i32) -> BinderResult<()> {
-        log::info!("onUserRemoved(user={user_id})");
+        info!("onUserRemoved(user={user_id})");
         let _wp = wd::watch("IKeystoreMaintenance::onUserRemoved");
         self.add_or_remove_user(user_id).map_err(into_logged_binder)
     }
 
     fn onUserLskfRemoved(&self, user_id: i32) -> BinderResult<()> {
-        log::info!("onUserLskfRemoved(user={user_id})");
+        info!("onUserLskfRemoved(user={user_id})");
         let _wp = wd::watch("IKeystoreMaintenance::onUserLskfRemoved");
         Self::on_user_lskf_removed(user_id).map_err(into_logged_binder)
     }
 
     fn clearNamespace(&self, domain: Domain, nspace: i64) -> BinderResult<()> {
-        log::info!("clearNamespace({domain:?}, nspace={nspace})");
+        info!("clearNamespace({domain:?}, nspace={nspace})");
         let _wp = wd::watch("IKeystoreMaintenance::clearNamespace");
         self.clear_namespace(domain, nspace).map_err(into_logged_binder)
     }
 
     fn earlyBootEnded(&self) -> BinderResult<()> {
-        log::info!("earlyBootEnded()");
+        info!("earlyBootEnded()");
         let _wp = wd::watch("IKeystoreMaintenance::earlyBootEnded");
         Self::early_boot_ended().map_err(into_logged_binder)
     }
@@ -620,13 +629,13 @@ impl IKeystoreMaintenance for Maintenance {
         source: &KeyDescriptor,
         destination: &KeyDescriptor,
     ) -> BinderResult<()> {
-        log::info!("migrateKeyNamespace(src={source:?}, dest={destination:?})");
+        info!("migrateKeyNamespace(src={source:?}, dest={destination:?})");
         let _wp = wd::watch("IKeystoreMaintenance::migrateKeyNamespace");
         Self::migrate_key_namespace(source, destination).map_err(into_logged_binder)
     }
 
     fn deleteAllKeys(&self) -> BinderResult<()> {
-        log::warn!("deleteAllKeys() invoked, indicating initial setup or post-factory reset");
+        warn!("deleteAllKeys() invoked, indicating initial setup or post-factory reset");
         let _wp = wd::watch("IKeystoreMaintenance::deleteAllKeys");
         Self::delete_all_keys().map_err(into_logged_binder)
     }
@@ -636,8 +645,9 @@ impl IKeystoreMaintenance for Maintenance {
         user_id: i32,
         secure_user_id: i64,
     ) -> BinderResult<std::vec::Vec<i64>> {
-        log::info!("getAppUidsAffectedBySid(secure_user_id={secure_user_id:?})");
+        let sid = SecureUserId(secure_user_id);
+        info!("getAppUidsAffectedBySid({user_id:?}, {sid:?})");
         let _wp = wd::watch("IKeystoreMaintenance::getAppUidsAffectedBySid");
-        Self::get_app_uids_affected_by_sid(user_id, secure_user_id).map_err(into_logged_binder)
+        Self::get_app_uids_affected_by_sid(user_id, sid).map_err(into_logged_binder)
     }
 }

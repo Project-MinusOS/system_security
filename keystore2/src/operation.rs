@@ -143,6 +143,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     IKeystoreOperation::BnKeystoreOperation, IKeystoreOperation::IKeystoreOperation,
 };
 use anyhow::{anyhow, Context, Result};
+use log::{error, warn};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, MutexGuard, Weak},
@@ -296,7 +297,7 @@ impl Operation {
 
         // We abort the operation. If there was an error we log it but ignore it.
         if let Err(e) = map_km_error(self.km_op.abort()) {
-            log::warn!("In prune: KeyMint::abort failed with {:?}.", e);
+            warn!("In prune: KeyMint::abort failed: {e:?}.");
         }
 
         Ok(())
@@ -473,7 +474,7 @@ impl Drop for Operation {
             // If the operation was still active we call abort, setting
             // the outcome to `Outcome::Dropped`
             if let Err(e) = self.abort(Outcome::Dropped) {
-                log::error!("While dropping Operation: abort failed:\n    {:?}", e);
+                error!("While dropping Operation: abort failed: {e:?}");
             }
         }
     }
@@ -867,7 +868,7 @@ impl IKeystoreOperation for KeystoreOperation {
                 // There is no reason to clutter the log with it. It is never the cause
                 // for a true problem.
                 Some(Error::Km(ErrorCode::INVALID_OPERATION_HANDLE)) => {}
-                _ => log::error!("{:?}", e),
+                _ => error!("{e:?}"),
             };
             into_binder(e)
         })

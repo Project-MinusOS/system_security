@@ -19,23 +19,23 @@
 //! certificate chains signed by some root authority and stored in a keystore SQLite
 //! DB.
 
+use crate::error::wrapped_rkpd_error_to_ks_error;
+use crate::globals::get_remotely_provisioned_component_name;
+use crate::ks_err;
+use crate::metrics_store::log_rkp_error_stats;
+use crate::watchdog_helper::watchdog as wd;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, AttestationKey::AttestationKey, KeyParameter::KeyParameter,
     KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
 };
+use android_security_metrics::aidl::android::security::metrics::RkpError::RkpError as MetricsRkpError;
 use android_security_rkp_aidl::aidl::android::security::rkp::RemotelyProvisionedKey::RemotelyProvisionedKey;
 use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor,
 };
 use anyhow::{Context, Result};
 use keystore2_crypto::parse_subject_from_certificate;
-
-use crate::error::wrapped_rkpd_error_to_ks_error;
-use crate::globals::get_remotely_provisioned_component_name;
-use crate::ks_err;
-use crate::metrics_store::log_rkp_error_stats;
-use crate::watchdog_helper::watchdog as wd;
-use android_security_metrics::aidl::android::security::metrics::RkpError::RkpError as MetricsRkpError;
+use log::{error, warn};
 
 /// Contains helper functions to check if remote provisioning is enabled on the system and, if so,
 /// to assign and retrieve attestation keys and certificate chains.
@@ -91,10 +91,10 @@ impl RemProvState {
             match get_rkpd_attestation_key(&self.security_level, caller_uid) {
                 Err(e) => {
                     if self.is_rkp_only() {
-                        log::error!("Error occurred: {:?}", e);
+                        error!("Error occurred: {e:?}");
                         return Err(wrapped_rkpd_error_to_ks_error(&e)).context(format!("{e:?}"));
                     }
-                    log::warn!("Error occurred: {:?}", e);
+                    warn!("Error occurred: {e:?}");
                     log_rkp_error_stats(
                         MetricsRkpError::FALL_BACK_DURING_HYBRID,
                         &self.security_level,

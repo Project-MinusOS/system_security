@@ -48,13 +48,21 @@ use keystore2_apc_compat::{
     APC_COMPAT_ERROR_SYSTEM_ERROR,
 };
 use keystore2_crypto::{aes_gcm_decrypt, aes_gcm_encrypt, ZVec};
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::iter::IntoIterator;
 use std::thread::sleep;
 use std::time::Duration;
 
 #[cfg(test)]
 mod tests;
+
+/// A secure user ID ("sid") corresponding to an `AndroidUserId` that has been registered with a
+/// secure authenticator instance.
+///
+/// The underlying integer type is `i64` to match the AIDL `long` types used in authenticator
+/// HALs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SecureUserId(pub i64);
 
 /// A per-operation authentication challenge value.
 ///
@@ -223,11 +231,9 @@ where
 {
     let (format, key_material, mut chars) =
         crate::sw_keyblob::export_key(inner_keyblob, upgrade_params)?;
-    log::debug!(
-        "importing {:?} key material (len={}) with original chars={:?}",
-        format,
+    debug!(
+        "importing {format:?} key material (len={}) with original chars={chars:?}",
         key_material.len(),
-        chars
     );
     let asymmetric = chars.iter().any(|kp| {
         kp.tag == Tag::ALGORITHM
@@ -288,7 +294,7 @@ where
             value: KeyParameterValue::DateTime(UNDEFINED_NOT_AFTER),
         });
     }
-    log::debug!("import parameters={import_params:?}");
+    debug!("import parameters={import_params:?}");
 
     let creation_result = {
         let _wp = watchdog::watch(
@@ -391,9 +397,7 @@ where
                 //
                 //    The inner keyblob should still be recognized by the hardware implementation, so
                 //    strip the prefix and attempt a key upgrade.
-                log::info!(
-                    "found apparent km_compat(Keymaster) HW blob, attempt strip-and-upgrade"
-                );
+                info!("found apparent km_compat(Keymaster) HW blob, attempt strip-and-upgrade");
                 let inner_keyblob = &key_blob[km_compat::KEYMASTER_BLOB_HW_PREFIX.len()..];
                 upgrade_keyblob_and_perform_op(
                     km_dev,
@@ -414,7 +418,7 @@ where
                 //    The inner keyblob should be in the format produced by the C++ reference
                 //    implementation of KeyMint.  Extract the key material and import it into the
                 //    current KeyMint device.
-                log::info!("found apparent km_compat(Keymaster) SW blob, attempt strip-and-import");
+                info!("found apparent km_compat(Keymaster) SW blob, attempt strip-and-import");
                 let inner_keyblob = &key_blob[km_compat::KEYMASTER_BLOB_SW_PREFIX.len()..];
                 import_keyblob_and_perform_op(
                     km_dev,
@@ -438,9 +442,7 @@ where
                 //    The inner keyblob should be in the format produced by the C++ reference
                 //    implementation of KeyMint.  Extract the key material and import it into the
                 //    current KeyMint device.
-                log::info!(
-                    "found apparent km_compat.rs(KeyMint) SW blob, attempt strip-and-import"
-                );
+                info!("found apparent km_compat.rs(KeyMint) SW blob, attempt strip-and-import");
                 import_keyblob_and_perform_op(
                     km_dev,
                     inner_keyblob,
@@ -574,7 +576,7 @@ pub(crate) fn estimate_safe_amount_to_return(
         // that the binder overhead is 60% (to be confirmed). So break after
         // 350KB and return a partial list.
         if bytes > response_size_limit {
-            log::warn!(
+            warn!(
                 "{domain:?}:{namespace}: Key descriptors list ({} items after {start_past_alias:?}) \
                  may exceed binder size, returning {count} items est. {bytes} bytes",
                 key_descriptors.len(),

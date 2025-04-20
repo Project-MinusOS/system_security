@@ -26,6 +26,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
 };
 use anyhow::{Context, Result};
 use keystore2_crypto::{aes_gcm_decrypt, Password, ZVec};
+use log::{error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::{convert::TryInto, fs::File, path::Path, path::PathBuf};
@@ -823,7 +824,7 @@ impl LegacyBlobLoader {
         Ok(blob.and_then(|blob| match blob.value {
             BlobValue::Generic(blob) => Some(blob),
             _ => {
-                log::info!("Unexpected legacy keystore entry blob type. Ignoring");
+                info!("Unexpected legacy keystore entry blob type. Ignoring");
                 None
             }
         }))
@@ -919,7 +920,7 @@ impl LegacyBlobLoader {
     fn make_legacy_keystore_entry_filename(&self, uid: u32, alias: &str) -> Option<PathBuf> {
         // Legacy entries must not use known keystore prefixes.
         if Self::is_keystore_alias(alias) {
-            log::warn!(
+            warn!(
                 "Known keystore prefixes cannot be used with legacy keystore -> ignoring request."
             );
             return None;
@@ -1104,17 +1105,17 @@ impl LegacyBlobLoader {
                     // Only a subset of keys are expected.
                     ErrorKind::NotFound => continue,
                     // Log error but ignore.
-                    _ => log::error!("Error while deleting key blob entries. {:?}", e),
+                    _ => error!("Error while deleting key blob entries: {e:?}"),
                 }
             }
             let path = self.make_chr_filename(uid, alias, prefix);
             if let Err(e) = Self::with_retry_interrupted(|| fs::remove_file(path.as_path())) {
                 match e.kind() {
                     ErrorKind::NotFound => {
-                        log::info!("No characteristics file found for legacy key blob.")
+                        info!("No characteristics file found for legacy key blob.")
                     }
                     // Log error but ignore.
-                    _ => log::error!("Error while deleting key blob entries. {:?}", e),
+                    _ => error!("Error while deleting key blob entries: {e:?}"),
                 }
             }
             something_was_deleted = true;
@@ -1131,7 +1132,7 @@ impl LegacyBlobLoader {
                     // USRCERT and CACERT are optional either or both may or may not be present.
                     ErrorKind::NotFound => continue,
                     // Log error but ignore.
-                    _ => log::error!("Error while deleting key blob entries. {:?}", e),
+                    _ => error!("Error while deleting key blob entries: {e:?}"),
                 }
                 something_was_deleted = true;
             }

@@ -64,6 +64,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     KeyMetadata::KeyMetadata, KeyParameters::KeyParameters, ResponseCode::ResponseCode,
 };
 use anyhow::{anyhow, Context, Result};
+use log::error;
 use postprocessor_client::process_certificate_chain;
 use rkpd_client::store_rkpd_attestation_key;
 use rustutils::system_properties::read_bool;
@@ -362,7 +363,7 @@ impl KeystoreSecurityLevel {
                                 {
                                     log_key_integrity_violation(&key);
                                 } else {
-                                    log::error!("Failed to load key descriptor for audit log");
+                                    error!("Failed to load key descriptor for audit log");
                                 }
                             }
                             return v;

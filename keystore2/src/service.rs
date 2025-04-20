@@ -52,6 +52,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 use anyhow::{Context, Result};
 use error::Error;
 use keystore2_selinux as selinux;
+use log::error;
 
 /// Implementation of the IKeystoreService.
 #[derive(Default)]
@@ -72,8 +73,8 @@ impl KeystoreService {
         ) {
             Ok(v) => v,
             Err(e) => {
-                log::error!("Failed to construct mandatory security level TEE: {e:?}");
-                log::error!("Does the device have a /default Keymaster or KeyMint instance?");
+                error!("Failed to construct mandatory security level TEE: {e:?}");
+                error!("Does the device have a /default Keymaster or KeyMint instance?");
                 return Err(e.context(ks_err!("Trying to construct mandatory security level TEE")));
             }
         };

@@ -54,7 +54,7 @@ fn main() {
     );
     // Redirect panic messages to logcat.
     panic::set_hook(Box::new(|panic_info| {
-        error!("{}", panic_info);
+        error!("{panic_info}");
     }));
 
     // Saying hi.
@@ -64,9 +64,9 @@ fn main() {
     args.next().expect("That's odd. How is there not even a first argument?");
 
     // This must happen early before any other sqlite operations.
-    log::info!("Setting up sqlite logging for keystore2");
+    info!("Setting up sqlite logging for keystore2");
     fn sqlite_log_handler(err: c_int, message: &str) {
-        log::error!("[SQLITE3] {}: {}", err, message);
+        error!("[SQLITE3] {err}: {message}");
     }
     // SAFETY: There are no other threads yet, `sqlite_log_handler` is threadsafe, and it doesn't
     // invoke any SQLite calls.

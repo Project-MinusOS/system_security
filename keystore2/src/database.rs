@@ -53,7 +53,9 @@ use crate::impl_metadata; // This is in database/utils.rs
 use crate::key_parameter::{KeyParameter, KeyParameterValue, Tag};
 use crate::ks_err;
 use crate::permission::KeyPermSet;
-use crate::utils::{get_current_time_in_milliseconds, watchdog as wd, Challenge, AID_USER_OFFSET};
+use crate::utils::{
+    get_current_time_in_milliseconds, watchdog as wd, Challenge, SecureUserId, AID_USER_OFFSET,
+};
 use crate::{
     error::{Error as KsError, ErrorCode, ResponseCode},
     super_key::SuperKeyType,
@@ -69,13 +71,9 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor,
 };
 use anyhow::{anyhow, Context, Result};
-use keystore2_flags;
-use std::{convert::TryFrom, convert::TryInto, ops::Deref, sync::LazyLock, time::SystemTimeError};
-use utils as db_utils;
-use utils::SqlField;
-
 use keystore2_crypto::ZVec;
-use log::error;
+use keystore2_flags;
+use log::{error, info};
 #[cfg(not(test))]
 use rand::prelude::random;
 use rusqlite::{
@@ -86,13 +84,15 @@ use rusqlite::{
     types::{FromSqlError, Value, ValueRef},
     Connection, OptionalExtension, ToSql, Transaction,
 };
-
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, SystemTime},
 };
+use std::{convert::TryFrom, convert::TryInto, ops::Deref, sync::LazyLock, time::SystemTimeError};
+use utils as db_utils;
+use utils::SqlField;
 
 use TransactionBehavior::Immediate;
 
@@ -870,9 +870,13 @@ impl AuthTokenEntry {
     }
 
     /// Checks if this auth token satisfies the given authentication information.
-    pub fn satisfies(&self, user_secure_ids: &[i64], auth_type: HardwareAuthenticatorType) -> bool {
-        user_secure_ids.iter().any(|&sid| {
-            (sid == self.auth_token.userId || sid == self.auth_token.authenticatorId)
+    pub fn satisfies(
+        &self,
+        user_sids: &[SecureUserId],
+        auth_type: HardwareAuthenticatorType,
+    ) -> bool {
+        user_sids.iter().any(|&sid| {
+            (sid.0 == self.auth_token.userId || sid.0 == self.auth_token.authenticatorId)
                 && ((auth_type.0 & self.auth_token.authenticatorType.0) != 0)
         })
     }
@@ -988,7 +992,7 @@ impl KeystoreDB {
             .context("Trying to prepare query to mark superseded keyblobs")?;
         stmt.execute(params![BlobState::Superseded, sc_key_blob, sc_key_blob])
             .context(ks_err!("Failed to set state=superseded state for keyblobs"))?;
-        log::info!("marked non-current blobentry rows for keyblobs as superseded");
+        info!("marked non-current blobentry rows for keyblobs as superseded");
 
         // Mark keyblobs that don't have a corresponding key.
         // This may take a while if there are excessive numbers of keys in the database.
@@ -1003,7 +1007,7 @@ impl KeystoreDB {
             .context("Trying to prepare query to mark orphaned keyblobs")?;
         stmt.execute(params![BlobState::Orphaned, sc_key_blob])
             .context(ks_err!("Failed to set state=orphaned for keyblobs"))?;
-        log::info!("marked orphaned blobentry rows for keyblobs");
+        info!("marked orphaned blobentry rows for keyblobs");
 
         // Add an index to make it fast to find out of date blobentry rows.
         let _wp = wd::watch("KeystoreDB::from_1_to_2 add blobentry index");
@@ -1288,6 +1292,40 @@ impl KeystoreDB {
             }
             _ => Err(anyhow::Error::msg(format!("Unsupported storage type: {}", storage_type.0))),
         }
+    }
+
+    /// Return the top `max_usize` uids by numbers of keys owned, together with their key
+    /// count. Only return uids that own more than `min_key_count` keys.
+    pub fn per_uid_counts(
+        &mut self,
+        max_uids: usize,
+        min_key_count: usize,
+    ) -> Result<Vec<(i32, usize)>> {
+        self.with_transaction(Immediate("TX_per_uid_counts"), |tx| {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT namespace, COUNT(*) FROM persistent.keyentry
+                         WHERE domain = ?
+                         GROUP BY namespace
+                         ORDER BY COUNT(*) DESC
+                         LIMIT ?;",
+                )
+                .context(ks_err!("KeystoreDB::per_uid_counts: failed to prepare statement"))?;
+            let mut rows = stmt
+                .query(params![Domain::APP.0, max_uids])
+                .context(ks_err!("KeystoreDB::per_uid_counts: query failed"))?;
+            let mut results = Vec::new();
+            db_utils::with_rows_extract_all(&mut rows, |row| {
+                let uid: i32 = row.get(0).context("Failed to read namespace column")?;
+                let count: usize = row.get(1).context("Failed to read count")?;
+                if count > min_key_count {
+                    results.push((uid, count));
+                }
+                Ok(())
+            })?;
+            Ok(results).no_gc()
+        })
+        .context("KeystoreDB::per_uid_counts")
     }
 
     /// This function is intended to be used by the garbage collector.
@@ -2714,7 +2752,7 @@ impl KeystoreDB {
                     num_unbound += 1;
                 }
             }
-            log::info!("Deleting {num_unbound} auth-bound keys for user {user_id}");
+            info!("Deleting {num_unbound} auth-bound keys for user {user_id}");
             Ok(()).do_gc(notify_gc)
         })
         .context(ks_err!())
@@ -3012,7 +3050,7 @@ impl KeystoreDB {
     pub fn get_app_uids_affected_by_sid(
         &mut self,
         user_id: i32,
-        secure_user_id: i64,
+        sid: SecureUserId,
     ) -> Result<Vec<i64>> {
         let _wp = wd::watch("KeystoreDB::get_app_uids_affected_by_sid");
 
@@ -3058,7 +3096,7 @@ impl KeystoreDB {
                     let is_key_bound_to_sid = params.iter().any(|kp| {
                         matches!(
                             kp.key_parameter_value(),
-                            KeyParameterValue::UserSecureID(sid) if *sid == secure_user_id
+                            KeyParameterValue::UserSecureID(s) if *s == sid.0
                         )
                     });
                     Ok(is_key_bound_to_sid).no_gc()

@@ -29,6 +29,7 @@ use keystore2::{
     legacy_blob::LegacyBlobLoader, maintenance::DeleteListener, maintenance::Domain,
     utils::uid_to_android_user, utils::watchdog as wd,
 };
+use log::{error, warn};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::sync::Arc;
 use std::{
@@ -224,7 +225,7 @@ fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
         Some(Error::Binder(_, _)) | None => (ERROR_SYSTEM_ERROR, true),
     };
     if log_error {
-        log::error!("{:?}", e);
+        error!("{e:?}");
     }
     BinderStatus::new_service_specific_error(rc, anyhow_error_to_cstring(&e).as_deref())
 }
@@ -385,7 +386,7 @@ impl LegacyKeystore {
         };
 
         if let Err(e) = self.bulk_delete_uid(uid) {
-            log::warn!("In LegacyKeystore::delete_namespace: {:?}", e);
+            warn!("In LegacyKeystore::delete_namespace: {e:?}");
         }
         let mut db = self.open_db().context("In LegacyKeystore::delete_namespace.")?;
         db.remove_uid(uid).context("In LegacyKeystore::delete_namespace.")
@@ -393,7 +394,7 @@ impl LegacyKeystore {
 
     fn delete_user(&self, user_id: u32) -> Result<()> {
         if let Err(e) = self.bulk_delete_user(user_id) {
-            log::warn!("In LegacyKeystore::delete_user: {:?}", e);
+            warn!("In LegacyKeystore::delete_user: {e:?}");
         }
         let mut db = self.open_db().context("In LegacyKeystore::delete_user.")?;
         db.remove_user(user_id).context("In LegacyKeystore::delete_user.")
@@ -481,7 +482,7 @@ impl LegacyKeystore {
                 .context("In bulk_delete_uid: Trying to list entries.")?;
             for alias in entries.iter() {
                 if let Err(e) = state.legacy_loader.remove_legacy_keystore_entry(uid, alias) {
-                    log::warn!("In bulk_delete_uid: Failed to delete legacy entry. {:?}", e);
+                    warn!("In bulk_delete_uid: Failed to delete legacy entry. {e:?}");
                 }
             }
             Ok(())
@@ -497,7 +498,7 @@ impl LegacyKeystore {
             for (uid, entries) in entries.iter() {
                 for alias in entries.iter() {
                     if let Err(e) = state.legacy_loader.remove_legacy_keystore_entry(*uid, alias) {
-                        log::warn!("In bulk_delete_user: Failed to delete legacy entry. {:?}", e);
+                        warn!("In bulk_delete_user: Failed to delete legacy entry. {e:?}");
                     }
                 }
             }
