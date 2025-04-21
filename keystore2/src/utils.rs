@@ -48,7 +48,7 @@ use keystore2_apc_compat::{
     APC_COMPAT_ERROR_SYSTEM_ERROR,
 };
 use keystore2_crypto::{aes_gcm_decrypt, aes_gcm_encrypt, ZVec};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use std::iter::IntoIterator;
 use std::thread::sleep;
 use std::time::Duration;
@@ -673,24 +673,32 @@ impl<T: AesGcmKey> AesGcm for T {
     }
 }
 
+/// Get the Binder interface identified by `name`, retrying any failures up to the given
+/// `retry_count`.
 pub(crate) fn retry_get_interface<T: FromIBinder + ?Sized>(
     name: &str,
+    retry_count: usize,
 ) -> Result<Strong<T>, StatusCode> {
-    let retry_count = if cfg!(early_vm) { 5 } else { 1 };
-
-    let mut wait_time = Duration::from_secs(5);
-    for i in 1..retry_count {
-        match binder::get_interface(name) {
-            Ok(res) => return Ok(res),
-            Err(e) => {
-                warn!("failed to get interface {name}. Retry {i}/{retry_count}: {e:?}");
-                sleep(wait_time);
-                wait_time *= 2;
+    let mut attempts = 0;
+    let mut wait_time = Duration::from_secs(1);
+    loop {
+        let err = match binder::get_interface(name) {
+            Ok(res) => {
+                if attempts > 1 {
+                    info!("Success on get_interface({name}) after {attempts} failures!");
+                }
+                return Ok(res);
             }
+            Err(e) => e,
+        };
+        attempts += 1;
+        error!("Failed (attempt {attempts} of {retry_count}) to get_interface {name}: {err:?}");
+        if attempts >= retry_count {
+            error!("Give up retrying after {attempts} failures, return final error: {err:?}");
+            return Err(err);
         }
+        info!("Blocking wait {wait_time:?} before retry of get_interface({name})");
+        sleep(wait_time);
+        wait_time *= 2;
     }
-    if retry_count > 1 {
-        info!("{retry_count}-th (last) retry to get interface: {name}");
-    }
-    binder::get_interface(name)
 }

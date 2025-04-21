@@ -235,13 +235,13 @@ fn connect_keymint(
         .context(ks_err!("Get service name from binder service"))?;
 
     let (keymint, hal_version) = if let Some(service_name) = service_name {
+        // Allow a few retries for retrieving the /default KeyMint instance, as it is needed at
+        // startup and may also be starting up.  (However, note that a slow-starting /default
+        // KeyMint will result in extended boot times.)
+        let retry_count = if *security_level == SecurityLevel::TRUSTED_ENVIRONMENT { 6 } else { 1 };
         let km: Strong<dyn IKeyMintDevice> =
-            if SecurityLevel::TRUSTED_ENVIRONMENT == *security_level {
-                map_binder_status_code(retry_get_interface(&service_name))
-            } else {
-                map_binder_status_code(binder::get_interface(&service_name))
-            }
-            .context(ks_err!("Trying to connect to genuine KeyMint service."))?;
+            map_binder_status_code(retry_get_interface(&service_name, retry_count))
+                .context(ks_err!("Trying to connect to genuine KeyMint service."))?;
         // Map the HAL version code for KeyMint to be <AIDL version> * 100, so
         // - V1 is 100
         // - V2 is 200
