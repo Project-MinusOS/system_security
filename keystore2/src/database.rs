@@ -72,7 +72,6 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 };
 use anyhow::{anyhow, Context, Result};
 use keystore2_crypto::ZVec;
-use keystore2_flags;
 use log::{error, info};
 #[cfg(not(test))]
 use rand::prelude::random;
@@ -1354,56 +1353,25 @@ impl KeystoreDB {
             Self::cleanup_unreferenced(tx).context("Trying to cleanup unreferenced.")?;
 
             // Find up to `max_blobs` more out-of-date key blobs, load their metadata and return it.
-            let result: Vec<(i64, Vec<u8>)> = if keystore2_flags::use_blob_state_column() {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob find_next v2");
-                let mut stmt = tx
-                    .prepare(
-                        "SELECT id, blob FROM persistent.blobentry
+            let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob find_next v2");
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, blob FROM persistent.blobentry
                         WHERE subcomponent_type = ? AND state != ?
                         LIMIT ?;",
-                    )
-                    .context("Trying to prepare query for superseded blobs.")?;
+                )
+                .context("Trying to prepare query for superseded blobs.")?;
 
-                let rows = stmt
-                    .query_map(
-                        params![SubComponentType::KEY_BLOB, BlobState::Current, max_blobs as i64],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .context("Trying to query superseded blob.")?;
+            let rows = stmt
+                .query_map(
+                    params![SubComponentType::KEY_BLOB, BlobState::Current, max_blobs as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .context("Trying to query superseded blob.")?;
 
-                rows.collect::<Result<Vec<(i64, Vec<u8>)>, rusqlite::Error>>()
-                    .context("Trying to extract superseded blobs.")?
-            } else {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob find_next v1");
-                let mut stmt = tx
-                    .prepare(
-                        "SELECT id, blob FROM persistent.blobentry
-                        WHERE subcomponent_type = ?
-                        AND (
-                            id NOT IN (
-                                SELECT MAX(id) FROM persistent.blobentry
-                                WHERE subcomponent_type = ?
-                                GROUP BY keyentryid, subcomponent_type
-                            )
-                        OR keyentryid NOT IN (SELECT id FROM persistent.keyentry)
-                    ) LIMIT ?;",
-                    )
-                    .context("Trying to prepare query for superseded blobs.")?;
-
-                let rows = stmt
-                    .query_map(
-                        params![
-                            SubComponentType::KEY_BLOB,
-                            SubComponentType::KEY_BLOB,
-                            max_blobs as i64,
-                        ],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .context("Trying to query superseded blob.")?;
-
-                rows.collect::<Result<Vec<(i64, Vec<u8>)>, rusqlite::Error>>()
-                    .context("Trying to extract superseded blobs.")?
-            };
+            let result: Vec<(i64, Vec<u8>)> = rows
+                .collect::<Result<Vec<(i64, Vec<u8>)>, rusqlite::Error>>()
+                .context("Trying to extract superseded blobs.")?;
 
             let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob load_metadata");
             let result = result
@@ -1423,30 +1391,13 @@ impl KeystoreDB {
 
             // We did not find any out-of-date key blobs, so let's remove other types of superseded
             // blob in one transaction.
-            if keystore2_flags::use_blob_state_column() {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob delete v2");
-                tx.execute(
-                    "DELETE FROM persistent.blobentry
+            let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob delete v2");
+            tx.execute(
+                "DELETE FROM persistent.blobentry
                     WHERE subcomponent_type != ? AND state != ?;",
-                    params![SubComponentType::KEY_BLOB, BlobState::Current],
-                )
-                .context("Trying to purge out-of-date blobs (other than keyblobs)")?;
-            } else {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob delete v1");
-                tx.execute(
-                    "DELETE FROM persistent.blobentry
-                    WHERE NOT subcomponent_type = ?
-                    AND (
-                        id NOT IN (
-                           SELECT MAX(id) FROM persistent.blobentry
-                           WHERE NOT subcomponent_type = ?
-                           GROUP BY keyentryid, subcomponent_type
-                        ) OR keyentryid NOT IN (SELECT id FROM persistent.keyentry)
-                    );",
-                    params![SubComponentType::KEY_BLOB, SubComponentType::KEY_BLOB],
-                )
-                .context("Trying to purge superseded blobs.")?;
-            }
+                params![SubComponentType::KEY_BLOB, BlobState::Current],
+            )
+            .context("Trying to purge out-of-date blobs (other than keyblobs)")?;
 
             Ok(vec![]).no_gc()
         })
