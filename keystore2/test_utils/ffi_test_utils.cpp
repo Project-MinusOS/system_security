@@ -572,7 +572,6 @@ bool performCryptoOpUsingKeystoreEngine(int64_t grant_id) {
     std::string str_key = std::string(keystore2_grant_id_prefix) + key_id;
     bool result = false;
 
-#if defined(OPENSSL_IS_BORINGSSL)
     EVP_PKEY* evp = EVP_PKEY_from_keystore(str_key.c_str());
     if (!evp) {
         LOG(ERROR) << "Error while loading a key from keystore-engine";
@@ -605,7 +604,7 @@ bool performCryptoOpUsingKeystoreEngine(int64_t grant_id) {
 
     free(signature);
     EVP_PKEY_free(evp);
-#endif
+
     return result;
 }
 
