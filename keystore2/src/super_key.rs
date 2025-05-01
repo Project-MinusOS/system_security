@@ -359,7 +359,7 @@ impl SuperKeyManager {
         self.data
             .boot_level_key_cache
             .as_ref()
-            .map_or(false, |c| c.lock().unwrap().level_accessible(boot_level))
+            .is_some_and(|c| c.lock().unwrap().level_accessible(boot_level))
     }
 
     pub fn forget_all_keys_for_user(&mut self, user: UserId) {
