@@ -974,7 +974,7 @@ impl LegacyBlobLoader {
         for entry in dir {
             if (*entry.context(ks_err!("Trying to access dir entry"))?.file_name())
                 .to_str()
-                .map_or(false, |f| f.starts_with("user_"))
+                .is_some_and(|f| f.starts_with("user_"))
             {
                 return Ok(false);
             }
