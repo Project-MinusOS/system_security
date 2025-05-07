@@ -12,6 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This crate tests the keystore-engine library.
+//!
+//! The keystore-engine library provides a BoringSSL crypto engine where private
+//! key operations are performed by Android Keystore (i.e. via the `IKeystoreService`
+//! AIDL interface).  This allows some system components to use the BoringSSL API
+//! from C++ code, but still have the underlying key material held in secure hardware.
+//!
+//! The keystore-engine library is not widely exposed, nor is it vendor stable, so
+//! these tests are separate from the general tests of `IKeystoreService` (which _is_
+//! vendor-stable).
+
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, Digest::Digest, EcCurve::EcCurve, KeyPurpose::KeyPurpose,
     PaddingMode::PaddingMode,
