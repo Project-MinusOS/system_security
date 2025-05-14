@@ -72,6 +72,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 };
 use anyhow::{anyhow, Context, Result};
 use keystore2_crypto::ZVec;
+use keystore2_flags;
 use log::{error, info};
 #[cfg(not(test))]
 use rand::prelude::random;
@@ -1406,14 +1407,39 @@ impl KeystoreDB {
 
     /// This maintenance function should be called only once before the database is used for the
     /// first time. It restores the invariant that `KeyLifeCycle::Existing` is a transient state.
+    ///
     /// The function transitions all key entries from Existing to Unreferenced unconditionally and
     /// returns the number of rows affected. If this returns a value greater than 0, it means that
     /// Keystore crashed at some point during key generation. Callers may want to log such
     /// occurrences.
-    /// Unlike with `mark_unreferenced`, we don't need to purge grants, because only keys that made
+    ///
+    /// Unlike with `remove_key_rows`, we don't need to purge grants, because only keys that made
     /// it to `KeyLifeCycle::Live` may have grants.
+    ///
+    /// The function also marks any `blobentry` rows that don't have an owning `keyentry` row as
+    /// orphaned.
     pub fn cleanup_leftovers(&mut self) -> Result<usize> {
         let _wp = wd::watch("KeystoreDB::cleanup_leftovers");
+
+        if keystore2_flags::remove_rebound_keyblobs() {
+            self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
+                // Mark as orphaned any blobentry rows that have no associated keyentry row.
+                // Apply a per-reboot limit to avoid the possibility of delayed startup.
+                tx.execute(
+                    "UPDATE persistent.blobentry SET state = ?
+                    WHERE id IN (
+                      SELECT id FROM persistent.blobentry
+                      WHERE keyentryid NOT IN (
+                        SELECT id FROM persistent.keyentry
+                      )
+                      LIMIT 100000);",
+                    params![BlobState::Orphaned],
+                )
+                .context("Trying to mark orphaned blobs")
+                .need_gc()
+            })
+            .context(ks_err!())?;
+        }
 
         self.with_transaction(Immediate("TX_cleanup_leftovers"), |tx| {
             tx.execute(
@@ -1779,6 +1805,9 @@ impl KeystoreDB {
                     .context(ks_err!("Domain {:?} must be either App or SELinux.", domain));
             }
         }
+        // Mark any existing key for the alias/domain/namespace/key_type as `Unreferenced` (and wipe
+        // its alias/domain/namespace info) so it can be removed in a subsequent GC pass (in
+        // `cleanup_unreferenced()`).
         let updated = tx
             .execute(
                 "UPDATE persistent.keyentry
@@ -1787,6 +1816,7 @@ impl KeystoreDB {
                 params![KeyLifeCycle::Unreferenced, alias, domain.0 as u32, namespace, key_type],
             )
             .context(ks_err!("Failed to rebind existing entry."))?;
+        // Bind the new key ID to the alias and make it `Live`.
         let result = tx
             .execute(
                 "UPDATE persistent.keyentry
@@ -2281,7 +2311,7 @@ impl KeystoreDB {
             .context("Failed to update key usage count.")?;
 
             match limit {
-                1 => Self::mark_unreferenced(tx, key_id)
+                1 => Self::remove_key_rows(tx, key_id)
                     .map(|need_gc| (need_gc, ()))
                     .context("Trying to mark limited use key for deletion."),
                 0 => Err(KsError::Km(ErrorCode::INVALID_KEY_BLOB)).context("Key is exhausted."),
@@ -2409,7 +2439,11 @@ impl KeystoreDB {
         Ok((key_id_guard, key_entry))
     }
 
-    fn mark_unreferenced(tx: &Transaction, key_id: i64) -> Result<bool> {
+    /// Remove database table rows associated with the given `key_id`. The one exception
+    /// is that `blobentry` rows are not immediately deleted, but are instead marked as
+    /// orphaned so they can be removed in a later GC operation (which also involves
+    /// notifying the owning KeyMint of keyblob deletion).
+    fn remove_key_rows(tx: &Transaction, key_id: i64) -> Result<bool> {
         let updated = tx
             .execute("DELETE FROM persistent.keyentry WHERE id = ?;", params![key_id])
             .context("Trying to delete keyentry.")?;
@@ -2429,7 +2463,7 @@ impl KeystoreDB {
             "UPDATE persistent.blobentry SET state = ? WHERE keyentryid = ?",
             params![BlobState::Orphaned, key_id],
         )
-        .context("Trying to mark blobentrys as superseded")?;
+        .context("Trying to mark blobentrys as orphaned")?;
         Ok(updated != 0)
     }
 
@@ -2466,9 +2500,9 @@ impl KeystoreDB {
             check_permission(&access.descriptor, access.vector)
                 .context("While checking permission.")?;
 
-            Self::mark_unreferenced(tx, access.key_id)
+            Self::remove_key_rows(tx, access.key_id)
                 .map(|need_gc| (need_gc, ()))
-                .context("Trying to mark the key unreferenced.")
+                .context("Trying to remove key DB rows")
         })
         .context(ks_err!())
     }
@@ -2571,6 +2605,22 @@ impl KeystoreDB {
                 params![KeyLifeCycle::Unreferenced],
             )
             .context("Trying to delete grants.")?;
+
+            if keystore2_flags::remove_rebound_keyblobs() {
+                // Mark as orphaned any blobentry rows that are associated with keyentry rows that
+                // are about to be deleted.  The orphaned rows will be removed in a later GC
+                // operation (which also involves notifying the owning KeyMint of keyblob deletion).
+                tx.execute(
+                    "UPDATE persistent.blobentry SET state=?
+                    WHERE keyentryid IN (
+                      SELECT id FROM persistent.keyentry
+                      WHERE state = ?
+                    );",
+                    params![BlobState::Orphaned, KeyLifeCycle::Unreferenced],
+                )
+                .context("Trying to mark to-be-orphaned blobs")?;
+            }
+
             tx.execute(
                 "DELETE FROM persistent.keyentry
                 WHERE state = ?;",
@@ -2636,8 +2686,8 @@ impl KeystoreDB {
 
             let mut notify_gc = false;
             for key_id in key_ids {
-                notify_gc = Self::mark_unreferenced(tx, key_id)
-                    .context("In unbind_keys_for_user. Failed to mark key id as unreferenced.")?
+                notify_gc = Self::remove_key_rows(tx, key_id)
+                    .context("In unbind_keys_for_user. Failed to remove key rows.")?
                     || notify_gc;
             }
             Ok(()).do_gc(notify_gc)
@@ -2697,7 +2747,7 @@ impl KeystoreDB {
                     matches!(kp.key_parameter_value(), KeyParameterValue::UserSecureID(_))
                 });
                 if is_auth_bound_key {
-                    notify_gc = Self::mark_unreferenced(tx, key_id)
+                    notify_gc = Self::remove_key_rows(tx, key_id)
                         .context("In unbind_auth_bound_keys_for_user.")?
                         || notify_gc;
                     num_unbound += 1;

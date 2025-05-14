@@ -707,7 +707,7 @@ impl Enforcements {
                     Candidate { priority: 2, enc_type: SuperEncryptionType::UnlockedDeviceRequired }
                 }
                 KeyParameterValue::UserSecureID(_) if *domain == Domain::APP => {
-                    Candidate { priority: 1, enc_type: SuperEncryptionType::AfterFirstUnlock }
+                    Candidate { priority: 1, enc_type: SuperEncryptionType::CredentialEncrypted }
                 }
                 _ => Candidate { priority: 0, enc_type: SuperEncryptionType::None },
             };

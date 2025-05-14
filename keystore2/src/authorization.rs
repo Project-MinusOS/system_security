@@ -19,6 +19,7 @@ use crate::error::Error as KeystoreError;
 use crate::globals::{DB, ENFORCEMENTS, LEGACY_IMPORTER, SUPER_KEY};
 use crate::ks_err;
 use crate::permission::KeystorePerm;
+use crate::super_key::WipeKeyOption;
 use crate::utils::{check_keystore_permission, watchdog as wd, Challenge, SecureUserId};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     HardwareAuthToken::HardwareAuthToken, HardwareAuthenticatorType::HardwareAuthenticatorType,
@@ -165,11 +166,26 @@ impl AuthorizationManager {
         Ok(())
     }
 
+    fn on_user_storage_locked(&self, user_id: i32) -> Result<()> {
+        log::info!("on_user_storage_locked(user_id={})", user_id);
+
+        check_keystore_permission(KeystorePerm::Lock)
+            .context(ks_err!("caller missing Lock permission"))?;
+
+        // Delete super key in cache, if exists.
+        SUPER_KEY.write().unwrap().forget_all_keys_for_user(user_id as u32);
+
+        Ok(())
+    }
+
     fn on_weak_unlock_methods_expired(&self, user_id: i32) -> Result<()> {
         info!("on_weak_unlock_methods_expired(user_id={user_id})");
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
-        SUPER_KEY.write().unwrap().wipe_plaintext_unlocked_device_required_keys(user_id as u32);
+        SUPER_KEY
+            .write()
+            .unwrap()
+            .wipe_unlocked_device_required_keys(user_id as u32, WipeKeyOption::PlaintextOnly);
         Ok(())
     }
 
@@ -177,7 +193,10 @@ impl AuthorizationManager {
         info!("on_non_lskf_unlock_methods_expired(user_id={user_id})");
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
-        SUPER_KEY.write().unwrap().wipe_all_unlocked_device_required_keys(user_id as u32);
+        SUPER_KEY.write().unwrap().wipe_unlocked_device_required_keys(
+            user_id as u32,
+            WipeKeyOption::PlaintextAndBiometric,
+        );
         Ok(())
     }
 
@@ -253,6 +272,12 @@ impl IKeystoreAuthorization for AuthorizationManager {
         let _wp = wd::watch("IKeystoreAuthorization::onDeviceLocked");
         self.on_device_locked(user_id, &unlocking_sids, weak_unlock_enabled)
             .map_err(into_logged_binder)
+    }
+
+    fn onUserStorageLocked(&self, user_id: i32) -> BinderResult<()> {
+        log::info!("onUserStorageLocked(user={user_id})");
+        let _wp = wd::watch("IKeystoreMaintenance::onUserStorageLocked");
+        self.on_user_storage_locked(user_id).map_err(into_logged_binder)
     }
 
     fn onWeakUnlockMethodsExpired(&self, user_id: i32) -> BinderResult<()> {

@@ -48,3 +48,11 @@ flag {
   bug: "395078130"
   is_fixed_read_only: true
 }
+
+flag {
+  name: "remove_rebound_keyblobs"
+  namespace: "hardware_backed_security"
+  description: "Garbage collect keyblobs associated with keys that have been rebound"
+  bug: "409777303"
+  is_fixed_read_only: true
+}
