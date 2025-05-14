@@ -50,9 +50,12 @@ flag {
 }
 
 flag {
-  name: "remove_rebound_keyblobs"
+  name: "remove_rebound_keyblobs_fix"
   namespace: "hardware_backed_security"
   description: "Garbage collect keyblobs associated with keys that have been rebound"
-  bug: "409777303"
+  bug: "416190842"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
   is_fixed_read_only: true
 }

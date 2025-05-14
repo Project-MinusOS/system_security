@@ -2587,7 +2587,7 @@ fn test_blobentry_gc() -> Result<()> {
 
     // Make parts of the test conditional on whether the fix for lost keyblobs from key rebind is
     // present.
-    let fixed = keystore2_flags::remove_rebound_keyblobs();
+    let fixed = keystore2_flags::remove_rebound_keyblobs_fix();
 
     init_logging();
     let mut db = new_test_db()?;
@@ -3135,7 +3135,7 @@ fn test_upgrade_1_to_2_with_many_keys() -> Result<()> {
 #[test]
 fn test_many_rebind_same_alias() -> Result<()> {
     init_logging();
-    let fixed = keystore2_flags::remove_rebound_keyblobs();
+    let fixed = keystore2_flags::remove_rebound_keyblobs_fix();
 
     // Put the test database on disk for a more realistic result.
     let db_root = tempfile::Builder::new().prefix("ks2db-test-").tempdir().unwrap();

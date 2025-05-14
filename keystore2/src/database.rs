@@ -1421,7 +1421,7 @@ impl KeystoreDB {
     pub fn cleanup_leftovers(&mut self) -> Result<usize> {
         let _wp = wd::watch("KeystoreDB::cleanup_leftovers");
 
-        if keystore2_flags::remove_rebound_keyblobs() {
+        if keystore2_flags::remove_rebound_keyblobs_fix() {
             self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
                 // Mark as orphaned any blobentry rows that have no associated keyentry row.
                 // Apply a per-reboot limit to avoid the possibility of delayed startup.
@@ -2606,7 +2606,7 @@ impl KeystoreDB {
             )
             .context("Trying to delete grants.")?;
 
-            if keystore2_flags::remove_rebound_keyblobs() {
+            if keystore2_flags::remove_rebound_keyblobs_fix() {
                 // Mark as orphaned any blobentry rows that are associated with keyentry rows that
                 // are about to be deleted.  The orphaned rows will be removed in a later GC
                 // operation (which also involves notifying the owning KeyMint of keyblob deletion).
