@@ -141,7 +141,7 @@ impl KeystoreService {
         let super_key = SUPER_KEY
             .read()
             .unwrap()
-            .get_after_first_unlock_key_by_user_id(uid_to_android_user(caller_uid));
+            .get_credential_encrypted_key_by_user_id(uid_to_android_user(caller_uid));
 
         let (key_id_guard, mut key_entry) = DB
             .with(|db| {
@@ -198,7 +198,7 @@ impl KeystoreService {
         let super_key = SUPER_KEY
             .read()
             .unwrap()
-            .get_after_first_unlock_key_by_user_id(uid_to_android_user(caller_uid));
+            .get_credential_encrypted_key_by_user_id(uid_to_android_user(caller_uid));
 
         DB.with::<_, Result<()>>(|db| {
             let entry = match LEGACY_IMPORTER.with_try_import(key, caller_uid, super_key, || {
@@ -348,7 +348,7 @@ impl KeystoreService {
         let super_key = SUPER_KEY
             .read()
             .unwrap()
-            .get_after_first_unlock_key_by_user_id(uid_to_android_user(caller_uid));
+            .get_credential_encrypted_key_by_user_id(uid_to_android_user(caller_uid));
 
         DB.with(|db| {
             LEGACY_IMPORTER.with_try_import(key, caller_uid, super_key, || {
@@ -372,7 +372,7 @@ impl KeystoreService {
         let super_key = SUPER_KEY
             .read()
             .unwrap()
-            .get_after_first_unlock_key_by_user_id(uid_to_android_user(caller_uid));
+            .get_credential_encrypted_key_by_user_id(uid_to_android_user(caller_uid));
 
         DB.with(|db| {
             LEGACY_IMPORTER.with_try_import(key, caller_uid, super_key, || {

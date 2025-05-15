@@ -517,7 +517,7 @@ impl LegacyKeystore {
                 if let Some(key) = SUPER_KEY
                     .read()
                     .unwrap()
-                    .get_after_first_unlock_key_by_user_id(uid_to_android_user(uid))
+                    .get_credential_encrypted_key_by_user_id(uid_to_android_user(uid))
                 {
                     key.decrypt(ciphertext, iv, tag)
                 } else {

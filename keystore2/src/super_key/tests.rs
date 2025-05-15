@@ -57,7 +57,7 @@ fn assert_unlocked(
     let user_state =
         skm.write().unwrap().get_user_state(keystore_db, legacy_importer, user_id).unwrap();
     match user_state {
-        UserState::AfterFirstUnlock(_) => {}
+        UserState::CeUnlocked(_) => {}
         _ => panic!("{}", err_msg),
     }
 }
@@ -72,7 +72,7 @@ fn assert_locked(
     let user_state =
         skm.write().unwrap().get_user_state(keystore_db, legacy_importer, user_id).unwrap();
     match user_state {
-        UserState::BeforeFirstUnlock => {}
+        UserState::CeLocked => {}
         _ => panic!("{}", err_msg),
     }
 }
