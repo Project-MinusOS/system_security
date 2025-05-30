@@ -31,12 +31,27 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, IKeystoreService::IKeystoreService, KeyDescriptor::KeyDescriptor,
     KeyPermission::KeyPermission,
 };
-use keystore2_test_utils::ffi_test_utils::perform_crypto_op_using_keystore_engine;
 use keystore2_test_utils::{
-    authorizations::AuthSetBuilder, get_keystore_service, run_as, SecLevel,
+    authorizations::AuthSetBuilder, get_keystore_service, key_generations::Error, run_as, SecLevel,
 };
 use openssl::x509::X509;
 use rustutils::users::AID_USER_OFFSET;
+
+extern "C" {
+    // In ffi_engine.{cpp,hpp}
+    pub fn performCryptoOpUsingKeystoreEngine(grant_id: i64) -> bool;
+}
+
+/// Performs crypto operation using Keystore-Engine APIs.
+pub fn perform_crypto_op_using_keystore_engine(grant_id: i64) -> Result<(), Error> {
+    // SAFETY: no memory passed over FFI boundary.
+    let success = unsafe { performCryptoOpUsingKeystoreEngine(grant_id) };
+    if success {
+        Ok(())
+    } else {
+        Err(Error::Keystore2EngineOpFailed)
+    }
+}
 
 fn generate_rsa_key_and_grant_to_user(
     sl: &SecLevel,
@@ -148,7 +163,7 @@ fn perform_crypto_op_using_granted_key(
     grant_key_nspace: i64,
 ) {
     // Load the granted key from Keystore2-Engine API and perform crypto operations.
-    assert!(perform_crypto_op_using_keystore_engine(grant_key_nspace).unwrap());
+    assert!(perform_crypto_op_using_keystore_engine(grant_key_nspace).is_ok());
 
     // Delete the granted key.
     keystore2
