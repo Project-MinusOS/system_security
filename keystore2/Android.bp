@@ -61,7 +61,7 @@ rust_defaults {
         "liblog_rust",
         "libmessage_macro",
         "libpostprocessor_client",
-        "librand",
+        "librand-0.8",
         "librkpd_client",
         "librustutils",
         "libserde",
