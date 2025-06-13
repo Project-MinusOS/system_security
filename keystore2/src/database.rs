@@ -75,7 +75,7 @@ use keystore2_crypto::ZVec;
 use keystore2_flags;
 use log::{error, info};
 #[cfg(not(test))]
-use rand::prelude::random;
+use rand::random;
 use rusqlite::{
     params, params_from_iter,
     types::FromSql,

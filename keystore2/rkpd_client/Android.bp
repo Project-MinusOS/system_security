@@ -50,6 +50,6 @@ rust_test {
     defaults: ["librkpd_client_defaults"],
     test_suites: ["general-tests"],
     rustlibs: [
-        "librand-0.8",
+        "librand",
     ],
 }
