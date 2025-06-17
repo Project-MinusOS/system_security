@@ -35,7 +35,7 @@ rust_defaults {
         "libkeystore2_selinux",
         "liblog_rust",
         "libnix",
-        "librand-0.8",
+        "librand",
         "librustutils",
         "libserde",
         "libserde_cbor",

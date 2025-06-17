@@ -117,7 +117,9 @@ void getCsrForIRpc(const char* descriptor, const char* name, IRemotelyProvisione
         exit(-1);
     }
 
-    writeOutput(std::string(name), *request);
+    if (fullName != RKPVM_INSTANCE_NAME) {
+        writeOutput(std::string(name), *request);
+    }
 }
 
 // Callback for AServiceManager_forEachDeclaredInstance that writes out a CSR
