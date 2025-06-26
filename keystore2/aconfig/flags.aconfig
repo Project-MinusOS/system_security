@@ -34,14 +34,6 @@ flag {
 }
 
 flag {
-  name: "attest_modules"
-  namespace: "hardware_backed_security"
-  description: "Support attestation of modules"
-  bug: "369375199"
-  is_fixed_read_only: true
-}
-
-flag {
   name: "count_keys_per_uid"
   namespace: "hardware_backed_security"
   description: "Track counts of keys per-uid"

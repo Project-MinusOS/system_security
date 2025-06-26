@@ -462,12 +462,7 @@ impl IKeystoreService for KeystoreService {
     }
 
     fn getSupplementaryAttestationInfo(&self, tag: Tag) -> binder::Result<Vec<u8>> {
-        if keystore2_flags::attest_modules() {
-            let _wp = wd::watch("IKeystoreService::getSupplementaryAttestationInfo");
-            self.get_supplementary_attestation_info(tag).map_err(into_logged_binder)
-        } else {
-            log::error!("attest_modules flag is not toggled");
-            Err(binder::StatusCode::UNKNOWN_TRANSACTION.into())
-        }
+        let _wp = wd::watch("IKeystoreService::getSupplementaryAttestationInfo");
+        self.get_supplementary_attestation_info(tag).map_err(into_logged_binder)
     }
 }

@@ -261,22 +261,13 @@ impl Maintenance {
             info!("Module info has already been sent.");
             return;
         }
-        if keystore2_flags::attest_modules() {
-            std::thread::spawn(move || {
-                // Wait for apex info to be available before populating.
-                Self::watch_apex_info().unwrap_or_else(|e| {
-                    error!("failed to monitor apexd.status property: {e:?}");
-                    panic!("Terminating due to inaccessibility of apexd.status property, blocking boot: {e:?}");
-                });
+        std::thread::spawn(move || {
+            // Wait for apex info to be available before populating.
+            Self::watch_apex_info().unwrap_or_else(|e| {
+                error!("failed to monitor apexd.status property: {e:?}");
+                panic!("Terminating due to inaccessibility of apexd.status property, blocking boot: {e:?}");
             });
-        } else {
-            rustutils::system_properties::write("keystore.module_hash.sent", "true")
-                .unwrap_or_else(|e| {
-                        error!("Failed to set keystore.module_hash.sent to true; this will therefore block boot: {e:?}");
-                        panic!("Crashing Keystore because it failed to set keystore.module_hash.sent to true (which blocks boot).");
-                    }
-                );
-        }
+        });
     }
 
     /// Watch the `apexd.status` system property, and read apex module information once
