@@ -123,7 +123,6 @@ impl DB {
     }
 
     fn put(&mut self, caller_uid: u32, alias: &str, entry: &[u8]) -> Result<()> {
-        ensure_keystore_put_is_enabled()?;
         self.with_transaction(TransactionBehavior::Immediate, |tx| {
             tx.execute(
                 "INSERT OR REPLACE INTO profiles (owner, alias, profile) values (?, ?, ?)",
@@ -135,7 +134,6 @@ impl DB {
     }
 
     fn get(&mut self, caller_uid: u32, alias: &str) -> Result<Option<Vec<u8>>> {
-        ensure_keystore_get_is_enabled()?;
         self.with_transaction(TransactionBehavior::Deferred, |tx| {
             tx.query_row(
                 "SELECT profile FROM profiles WHERE owner = ? AND alias = ?;",
