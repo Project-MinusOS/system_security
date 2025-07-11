@@ -17,7 +17,7 @@
 
 use crate::error::anyhow_error_to_cstring;
 use crate::ks_err;
-use crate::utils::{compat_2_response_code, ui_opts_2_compat, watchdog as wd};
+use crate::utils::{compat_2_response_code, ui_opts_2_compat, watchdog as wd, AppUid};
 use android_security_apc::aidl::android::security::apc::{
     IConfirmationCallback::IConfirmationCallback,
     IProtectedConfirmation::{BnProtectedConfirmation, IProtectedConfirmation},
@@ -25,7 +25,7 @@ use android_security_apc::aidl::android::security::apc::{
 };
 use android_security_apc::binder::{
     BinderFeatures, ExceptionCode, Interface, Result as BinderResult, SpIBinder,
-    Status as BinderStatus, Strong, ThreadState,
+    Status as BinderStatus, Strong,
 };
 use anyhow::{Context, Result};
 use keystore2_apc_compat::ApcHal;
@@ -147,7 +147,7 @@ struct ApcSessionState {
     /// The client callback object.
     cb: SpIBinder,
     /// The uid of the owner of this APC session.
-    uid: u32,
+    uid: AppUid,
     /// The time when this session was started.
     start: Instant,
     /// This is set when the client calls abort.
@@ -158,7 +158,7 @@ struct ApcSessionState {
 
 struct ApcState {
     session: Option<ApcSessionState>,
-    rate_limiting: HashMap<u32, RateInfo>,
+    rate_limiting: HashMap<AppUid, RateInfo>,
     confirmation_token_sender: Sender<Vec<u8>>,
 }
 
@@ -253,7 +253,7 @@ impl ApcManager {
         }
 
         // Perform rate limiting.
-        let uid = ThreadState::get_calling_uid();
+        let uid = AppUid::calling();
         match state.rate_limiting.get(&uid) {
             None => {}
             Some(rate_info) => {

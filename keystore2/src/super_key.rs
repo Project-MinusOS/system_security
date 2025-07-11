@@ -28,7 +28,7 @@ use crate::{
     ks_err,
     legacy_importer::LegacyImporter,
     raw_device::KeyMintDevice,
-    utils::{watchdog as wd, AesGcm, SecureUserId, AID_KEYSTORE},
+    utils::{watchdog as wd, AesGcm, AndroidUserId, SecureUserId, AID_KEYSTORE},
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, HardwareAuthToken::HardwareAuthToken,
@@ -63,8 +63,6 @@ const MAX_MAX_BOOT_LEVEL: BootLevel = BootLevel(1_000_000_000);
 /// This seems short enough for security purposes, while long enough that even the
 /// very slowest device will present the auth token in time.
 const BIOMETRIC_AUTH_TIMEOUT_S: i32 = 15; // seconds
-
-type UserId = u32;
 
 /// Specify which keys should be wiped given a particular user's UserSuperKeys
 #[derive(PartialEq)]
@@ -285,7 +283,7 @@ struct UserSuperKeys {
 
 #[derive(Default)]
 struct SkmState {
-    user_keys: HashMap<UserId, UserSuperKeys>,
+    user_keys: HashMap<AndroidUserId, UserSuperKeys>,
     key_index: HashMap<i64, Weak<SuperKey>>,
     boot_level_key_cache: Option<Mutex<BootLevelKeyCache>>,
 }
@@ -373,13 +371,13 @@ impl SuperKeyManager {
             .is_some_and(|c| c.lock().unwrap().level_accessible(boot_level))
     }
 
-    pub fn forget_all_keys_for_user(&mut self, user: UserId) {
+    pub fn forget_all_keys_for_user(&mut self, user: AndroidUserId) {
         self.data.user_keys.remove(&user);
     }
 
     fn install_credential_encrypted_key_for_user(
         &mut self,
-        user: UserId,
+        user: AndroidUserId,
         super_key: Arc<SuperKey>,
     ) -> Result<()> {
         self.data
@@ -417,17 +415,17 @@ impl SuperKeyManager {
     /// user has not yet unlocked the device since boot.
     pub fn get_credential_encrypted_key_by_user_id(
         &self,
-        user_id: UserId,
+        user: AndroidUserId,
     ) -> Option<Arc<dyn AesGcm + Send + Sync>> {
-        self.get_credential_encrypted_key_by_user_id_internal(user_id)
+        self.get_credential_encrypted_key_by_user_id_internal(user)
             .map(|sk| -> Arc<dyn AesGcm + Send + Sync> { sk })
     }
 
     fn get_credential_encrypted_key_by_user_id_internal(
         &self,
-        user_id: UserId,
+        user: AndroidUserId,
     ) -> Option<Arc<SuperKey>> {
-        self.data.user_keys.get(&user_id).and_then(|e| e.credential_encrypted.as_ref().cloned())
+        self.data.user_keys.get(&user).and_then(|e| e.credential_encrypted.as_ref().cloned())
     }
 
     /// Check if a given key is super-encrypted, from its metadata. If so, unwrap the key using
@@ -498,12 +496,12 @@ impl SuperKeyManager {
         &self,
         db: &mut KeystoreDB,
         legacy_importer: &LegacyImporter,
-        user_id: UserId,
+        user: AndroidUserId,
     ) -> Result<bool> {
         let key_in_db = db
             .key_exists(
                 Domain::APP,
-                user_id as u64 as i64,
+                user.0 as i64,
                 CREDENTIAL_ENCRYPTED_SUPER_KEY.alias,
                 KeyType::Super,
             )
@@ -512,21 +510,21 @@ impl SuperKeyManager {
         if key_in_db {
             Ok(key_in_db)
         } else {
-            legacy_importer.has_super_key(user_id).context(ks_err!("Trying to query legacy db."))
+            legacy_importer.has_super_key(user).context(ks_err!("Trying to query legacy db."))
         }
     }
 
     // Helper function to populate super key cache from the super key blob loaded from the database.
     fn populate_cache_from_super_key_blob(
         &mut self,
-        user_id: UserId,
+        user: AndroidUserId,
         algorithm: SuperEncryptionAlgorithm,
         entry: KeyEntry,
         pw: &Password,
     ) -> Result<Arc<SuperKey>> {
         let super_key = Self::extract_super_key_from_key_entry(algorithm, entry, pw, None)
             .context(ks_err!("Failed to extract super key from key entry"))?;
-        self.install_credential_encrypted_key_for_user(user_id, super_key.clone())
+        self.install_credential_encrypted_key_for_user(user, super_key.clone())
             .context(ks_err!("Failed to install CredentialEncrypted super key for user!"))?;
         Ok(super_key)
     }
@@ -639,7 +637,7 @@ impl SuperKeyManager {
         symmetric_key: Option<&SuperKey>,
         public_key_type: &SuperKeyType,
         db: &mut KeystoreDB,
-        user_id: UserId,
+        user: AndroidUserId,
     ) -> Result<(Vec<u8>, BlobMetaData)> {
         if let Some(super_key) = symmetric_key {
             Self::encrypt_with_aes_super_key(key_blob, super_key).context(ks_err!(
@@ -648,7 +646,7 @@ impl SuperKeyManager {
         } else {
             // Symmetric key is not available, use public key encryption
             let loaded = db
-                .load_super_key(public_key_type, user_id)
+                .load_super_key(public_key_type, user)
                 .context(ks_err!("load_super_key failed."))?;
             let (key_id_guard, key_entry) =
                 loaded.ok_or_else(Error::sys).context(ks_err!("User ECDH super key missing."))?;
@@ -680,7 +678,7 @@ impl SuperKeyManager {
         domain: &Domain,
         key_parameters: &[KeyParameter],
         flags: Option<i32>,
-        user_id: UserId,
+        user: AndroidUserId,
         key_blob: &[u8],
     ) -> Result<(Vec<u8>, BlobMetaData)> {
         match Enforcements::super_encryption_required(domain, key_parameters, flags) {
@@ -690,26 +688,26 @@ impl SuperKeyManager {
                 // user has not logged in or the super keys were never initialized for the user for
                 // some reason, an error is returned.
                 match self
-                    .get_user_state(db, legacy_importer, user_id)
-                    .context(ks_err!("Failed to get user state for user {user_id}"))?
+                    .get_user_state(db, legacy_importer, user)
+                    .context(ks_err!("Failed to get user state for {user:?}"))?
                 {
                     UserState::CeUnlocked(super_key) => {
                         Self::encrypt_with_aes_super_key(key_blob, &super_key).context(ks_err!(
-                        "Failed to encrypt with CredentialEncrypted super key for user {user_id}"
-                    ))
+                            "Failed to encrypt with CredentialEncrypted super key for {user:?}"
+                        ))
                     }
                     UserState::CeLocked => {
                         Err(Error::Rc(ResponseCode::LOCKED)).context(ks_err!("Device is locked."))
                     }
                     UserState::Uninitialized => Err(Error::Rc(ResponseCode::UNINITIALIZED))
-                        .context(ks_err!("User {user_id} does not have super keys")),
+                        .context(ks_err!("User {user:?} does not have super keys")),
                 }
             }
             SuperEncryptionType::UnlockedDeviceRequired => {
                 let symmetric_key = self
                     .data
                     .user_keys
-                    .get(&user_id)
+                    .get(&user)
                     .and_then(|e| e.unlocked_device_required_symmetric.as_ref())
                     .map(|arc| arc.as_ref());
                 Self::encrypt_with_hybrid_super_key(
@@ -717,7 +715,7 @@ impl SuperKeyManager {
                     symmetric_key,
                     &USER_UNLOCKED_DEVICE_REQUIRED_P521_SUPER_KEY,
                     db,
-                    user_id,
+                    user,
                 )
                 .context(ks_err!("Failed to encrypt with UnlockedDeviceRequired hybrid scheme."))
             }
@@ -755,12 +753,12 @@ impl SuperKeyManager {
     fn create_super_key(
         &mut self,
         db: &mut KeystoreDB,
-        user_id: UserId,
+        user: AndroidUserId,
         key_type: &SuperKeyType,
         password: &Password,
         reencrypt_with: Option<Arc<SuperKey>>,
     ) -> Result<Arc<SuperKey>> {
-        info!("Creating {} for user {user_id}", key_type.name);
+        info!("Creating {} for {user:?}", key_type.name);
         let (super_key, public_key) = match key_type.algorithm {
             SuperEncryptionAlgorithm::Aes256Gcm => {
                 (generate_aes256_key().context(ks_err!("Failed to generate AES-256 key."))?, None)
@@ -783,7 +781,7 @@ impl SuperKeyManager {
             key_metadata.add(KeyMetaEntry::Sec1PublicKey(pk));
         }
         let key_entry = db
-            .store_super_key(user_id, key_type, &encrypted_super_key, &blob_metadata, &key_metadata)
+            .store_super_key(user, key_type, &encrypted_super_key, &blob_metadata, &key_metadata)
             .context(ks_err!("Failed to store super key."))?;
         Ok(Arc::new(SuperKey {
             algorithm: key_type.algorithm,
@@ -799,12 +797,12 @@ impl SuperKeyManager {
     fn get_or_create_super_key(
         &mut self,
         db: &mut KeystoreDB,
-        user_id: UserId,
+        user: AndroidUserId,
         key_type: &SuperKeyType,
         password: &Password,
         reencrypt_with: Option<Arc<SuperKey>>,
     ) -> Result<Arc<SuperKey>> {
-        let loaded_key = db.load_super_key(key_type, user_id)?;
+        let loaded_key = db.load_super_key(key_type, user)?;
         if let Some((_, key_entry)) = loaded_key {
             Ok(Self::extract_super_key_from_key_entry(
                 key_type.algorithm,
@@ -813,7 +811,7 @@ impl SuperKeyManager {
                 reencrypt_with,
             )?)
         } else {
-            self.create_super_key(db, user_id, key_type, password, reencrypt_with)
+            self.create_super_key(db, user, key_type, password, reencrypt_with)
         }
     }
 
@@ -822,13 +820,13 @@ impl SuperKeyManager {
     pub fn unlock_unlocked_device_required_keys(
         &mut self,
         db: &mut KeystoreDB,
-        user_id: UserId,
+        user: AndroidUserId,
         password: &Password,
     ) -> Result<()> {
         let (symmetric, private) = self
             .data
             .user_keys
-            .get(&user_id)
+            .get(&user)
             .map(|e| {
                 (
                     e.unlocked_device_required_symmetric.clone(),
@@ -849,7 +847,7 @@ impl SuperKeyManager {
         } else {
             self.get_or_create_super_key(
                 db,
-                user_id,
+                user,
                 &USER_UNLOCKED_DEVICE_REQUIRED_SYMMETRIC_SUPER_KEY,
                 password,
                 None,
@@ -864,7 +862,7 @@ impl SuperKeyManager {
         } else {
             self.get_or_create_super_key(
                 db,
-                user_id,
+                user,
                 &USER_UNLOCKED_DEVICE_REQUIRED_P521_SUPER_KEY,
                 password,
                 Some(aes.clone()),
@@ -874,7 +872,7 @@ impl SuperKeyManager {
 
         self.data.add_key_to_key_index(&aes)?;
         self.data.add_key_to_key_index(&ecdh)?;
-        let entry = self.data.user_keys.entry(user_id).or_default();
+        let entry = self.data.user_keys.entry(user).or_default();
         entry.unlocked_device_required_symmetric = Some(aes);
         entry.unlocked_device_required_private = Some(ecdh);
         Ok(())
@@ -885,11 +883,11 @@ impl SuperKeyManager {
     pub fn lock_unlocked_device_required_keys(
         &mut self,
         db: &mut KeystoreDB,
-        user_id: UserId,
+        user: AndroidUserId,
         unlocking_sids: &[SecureUserId],
         weak_unlock_enabled: bool,
     ) {
-        let entry = self.data.user_keys.entry(user_id).or_default();
+        let entry = self.data.user_keys.entry(user).or_default();
         if unlocking_sids.is_empty() {
             entry.biometric_unlock = None;
         } else if let (Some(aes), Some(ecdh)) = (
@@ -902,7 +900,7 @@ impl SuperKeyManager {
             // unlock methods expire.  So we need the biometric-encrypted copy too just in case.
             let res = (|| -> Result<()> {
                 let key_desc =
-                    KeyMintDevice::internal_descriptor(format!("biometric_unlock_key_{}", user_id));
+                    KeyMintDevice::internal_descriptor(format!("biometric_unlock_key_{}", user.0));
                 let encrypting_key = generate_aes256_key()?;
                 let km_dev: KeyMintDevice = KeyMintDevice::get(SecurityLevel::TRUSTED_ENVIRONMENT)
                     .context(ks_err!("KeyMintDevice::get failed"))?;
@@ -950,23 +948,27 @@ impl SuperKeyManager {
         }
         // Wipe the plaintext copy of the keys, unless a weak unlock method is enabled.
         if weak_unlock_enabled {
-            Self::log_status_of_unlocked_device_required_keys(user_id, entry);
+            Self::log_status_of_unlocked_device_required_keys(user, entry);
         } else {
             Self::wipe_unlocked_device_required_keys_internal(
-                user_id,
+                user,
                 entry,
                 WipeKeyOption::PlaintextOnly,
             )
         }
     }
 
-    pub fn wipe_unlocked_device_required_keys(&mut self, user_id: UserId, wipe_key: WipeKeyOption) {
-        let entry = self.data.user_keys.entry(user_id).or_default();
-        Self::wipe_unlocked_device_required_keys_internal(user_id, entry, wipe_key);
+    pub fn wipe_unlocked_device_required_keys(
+        &mut self,
+        user: AndroidUserId,
+        wipe_key: WipeKeyOption,
+    ) {
+        let entry = self.data.user_keys.entry(user).or_default();
+        Self::wipe_unlocked_device_required_keys_internal(user, entry, wipe_key);
     }
 
     fn wipe_unlocked_device_required_keys_internal(
-        user_id: UserId,
+        user: AndroidUserId,
         entry: &mut UserSuperKeys,
         wipe_key: WipeKeyOption,
     ) {
@@ -975,10 +977,10 @@ impl SuperKeyManager {
         if wipe_key == WipeKeyOption::PlaintextAndBiometric {
             entry.biometric_unlock = None;
         }
-        Self::log_status_of_unlocked_device_required_keys(user_id, entry);
+        Self::log_status_of_unlocked_device_required_keys(user, entry);
     }
 
-    fn log_status_of_unlocked_device_required_keys(user_id: UserId, entry: &UserSuperKeys) {
+    fn log_status_of_unlocked_device_required_keys(user: AndroidUserId, entry: &UserSuperKeys) {
         let status = match (
             // Note: the status of the symmetric and private keys should always be in sync.
             // So we only check one here.
@@ -990,7 +992,7 @@ impl SuperKeyManager {
             (true, false) => "retained in plaintext",
             (true, true) => "retained in plaintext, with biometric-encrypted copy too",
         };
-        info!("UnlockedDeviceRequired super keys for user {user_id} are {status}.");
+        info!("UnlockedDeviceRequired super keys for {user:?} are {status}");
     }
 
     /// User has unlocked, not using a password. See if any of our stored auth tokens can be used
@@ -998,9 +1000,9 @@ impl SuperKeyManager {
     pub fn try_unlock_user_with_biometric(
         &mut self,
         db: &mut KeystoreDB,
-        user_id: UserId,
+        user: AndroidUserId,
     ) -> Result<()> {
-        let entry = self.data.user_keys.entry(user_id).or_default();
+        let entry = self.data.user_keys.entry(user).or_default();
         if entry.unlocked_device_required_symmetric.is_some()
             && entry.unlocked_device_required_private.is_some()
         {
@@ -1054,7 +1056,7 @@ impl SuperKeyManager {
                             entry.unlocked_device_required_private = Some(private.clone());
                             self.data.add_key_to_key_index(&symmetric)?;
                             self.data.add_key_to_key_index(&private)?;
-                            info!("Successfully unlocked user {user_id} with biometric {sid:?}");
+                            info!("Successfully unlocked {user:?} with biometric {sid:?}",);
                             return Ok(());
                         }
                         Err(e) => {
@@ -1081,15 +1083,15 @@ impl SuperKeyManager {
         &self,
         db: &mut KeystoreDB,
         legacy_importer: &LegacyImporter,
-        user_id: UserId,
+        user: AndroidUserId,
     ) -> Result<UserState> {
-        match self.get_credential_encrypted_key_by_user_id_internal(user_id) {
+        match self.get_credential_encrypted_key_by_user_id_internal(user) {
             Some(super_key) => Ok(UserState::CeUnlocked(super_key)),
             None => {
                 // Check if a super key exists in the database or legacy database.
                 // If so, return locked user state.
                 if self
-                    .super_key_exists_in_db_for_user(db, legacy_importer, user_id)
+                    .super_key_exists_in_db_for_user(db, legacy_importer, user)
                     .context(ks_err!())?
                 {
                     Ok(UserState::CeLocked)
@@ -1106,17 +1108,17 @@ impl SuperKeyManager {
         &mut self,
         db: &mut KeystoreDB,
         legacy_importer: &LegacyImporter,
-        user_id: UserId,
+        user: AndroidUserId,
     ) -> Result<()> {
-        info!("remove_user(user={user_id})");
+        info!("remove_user({user:?})");
         // Mark keys created on behalf of the user as unreferenced.
         legacy_importer
-            .bulk_delete_user(user_id, false)
-            .context(ks_err!("Trying to delete legacy keys."))?;
-        db.unbind_keys_for_user(user_id).context(ks_err!("Error in unbinding keys."))?;
+            .bulk_delete_user(user, false)
+            .context(ks_err!("Trying to delete legacy keys for {user:?}"))?;
+        db.unbind_keys_for_user(user).context(ks_err!("Error in unbinding keys for {user:?}"))?;
 
         // Delete super key in cache, if exists.
-        self.forget_all_keys_for_user(user_id);
+        self.forget_all_keys_for_user(user);
         Ok(())
     }
 
@@ -1127,27 +1129,27 @@ impl SuperKeyManager {
         &mut self,
         db: &mut KeystoreDB,
         legacy_importer: &LegacyImporter,
-        user_id: UserId,
+        user: AndroidUserId,
         password: &Password,
         allow_existing: bool,
     ) -> Result<()> {
         // Create the CredentialEncrypted super key.
-        if self.super_key_exists_in_db_for_user(db, legacy_importer, user_id)? {
+        if self.super_key_exists_in_db_for_user(db, legacy_importer, user)? {
             info!("CredentialEncrypted super key already exists");
             if !allow_existing {
                 return Err(Error::sys()).context(ks_err!("Tried to re-init an initialized user!"));
             }
         } else {
             let super_key = self
-                .create_super_key(db, user_id, &CREDENTIAL_ENCRYPTED_SUPER_KEY, password, None)
+                .create_super_key(db, user, &CREDENTIAL_ENCRYPTED_SUPER_KEY, password, None)
                 .context(ks_err!("Failed to create CredentialEncrypted super key"))?;
 
-            self.install_credential_encrypted_key_for_user(user_id, super_key)
+            self.install_credential_encrypted_key_for_user(user, super_key)
                 .context(ks_err!("Failed to install CredentialEncrypted super key for user"))?;
         }
 
         // Create the UnlockedDeviceRequired super keys.
-        self.unlock_unlocked_device_required_keys(db, user_id, password)
+        self.unlock_unlocked_device_required_keys(db, user, password)
             .context(ks_err!("Failed to create UnlockedDeviceRequired super keys"))
     }
 
@@ -1164,39 +1166,37 @@ impl SuperKeyManager {
         &mut self,
         db: &mut KeystoreDB,
         legacy_importer: &LegacyImporter,
-        user_id: UserId,
+        user: AndroidUserId,
         password: &Password,
     ) -> Result<()> {
-        info!("unlock_user(user={user_id})");
-        match self.get_user_state(db, legacy_importer, user_id)? {
+        match self.get_user_state(db, legacy_importer, user)? {
             UserState::CeUnlocked(_) => {
-                self.unlock_unlocked_device_required_keys(db, user_id, password)
+                info!("CredentialEncrypted super key for user {user:?} is already unlocked.");
+                self.unlock_unlocked_device_required_keys(db, user, password)
             }
             UserState::Uninitialized => {
-                Err(Error::sys()).context(ks_err!("Tried to unlock an uninitialized user!"))
+                Err(Error::sys()).context(ks_err!("Tried to unlock an uninitialized {user:?}!"))
             }
             UserState::CeLocked => {
+                info!("Unlocking CredentialEncrypted super key for user {user:?}.");
                 let alias = &CREDENTIAL_ENCRYPTED_SUPER_KEY;
                 let result = legacy_importer
-                    .with_try_import_super_key(user_id, password, || {
-                        db.load_super_key(alias, user_id)
-                    })
-                    .context(ks_err!("Failed to load super key"))?;
+                    .with_try_import_super_key(user, password, || db.load_super_key(alias, user))
+                    .context(ks_err!("Failed to load super key for {user:?}"))?;
 
                 match result {
                     Some((_, entry)) => {
                         self.populate_cache_from_super_key_blob(
-                            user_id,
+                            user,
                             alias.algorithm,
                             entry,
                             password,
                         )
-                        .context(ks_err!("Failed when unlocking user."))?;
-                        self.unlock_unlocked_device_required_keys(db, user_id, password)
+                        .context(ks_err!("Failed when unlocking {user:?}"))?;
+                        self.unlock_unlocked_device_required_keys(db, user, password)
                     }
-                    None => {
-                        Err(Error::sys()).context(ks_err!("Locked user does not have a super key!"))
-                    }
+                    None => Err(Error::sys())
+                        .context(ks_err!("Locked user {user:?} does not have a super key!")),
                 }
             }
         }

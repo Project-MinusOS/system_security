@@ -20,7 +20,9 @@ use crate::globals::{DB, ENFORCEMENTS, LEGACY_IMPORTER, SUPER_KEY};
 use crate::ks_err;
 use crate::permission::KeystorePerm;
 use crate::super_key::WipeKeyOption;
-use crate::utils::{check_keystore_permission, watchdog as wd, Challenge, SecureUserId};
+use crate::utils::{
+    check_keystore_permission, watchdog as wd, AndroidUserId, Challenge, SecureUserId,
+};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     HardwareAuthToken::HardwareAuthToken, HardwareAuthenticatorType::HardwareAuthenticatorType,
 };
@@ -124,41 +126,39 @@ impl AuthorizationManager {
         Ok(())
     }
 
-    fn on_device_unlocked(&self, user_id: i32, password: Option<Password>) -> Result<()> {
-        info!("on_device_unlocked(user_id={user_id}, password.is_some()={})", password.is_some());
+    fn on_device_unlocked(&self, user: AndroidUserId, password: Option<Password>) -> Result<()> {
+        info!("on_device_unlocked({user:?}, password.is_some()={})", password.is_some(),);
         check_keystore_permission(KeystorePerm::Unlock)
             .context(ks_err!("caller missing Unlock permissions"))?;
-        ENFORCEMENTS.set_device_locked(user_id, false);
+        ENFORCEMENTS.set_device_locked(user, false);
 
         let mut skm = SUPER_KEY.write().unwrap();
         if let Some(password) = password {
-            DB.with(|db| {
-                skm.unlock_user(&mut db.borrow_mut(), &LEGACY_IMPORTER, user_id as u32, &password)
-            })
-            .context(ks_err!("Unlock with password."))
+            DB.with(|db| skm.unlock_user(&mut db.borrow_mut(), &LEGACY_IMPORTER, user, &password))
+                .context(ks_err!("Unlock with password."))
         } else {
-            DB.with(|db| skm.try_unlock_user_with_biometric(&mut db.borrow_mut(), user_id as u32))
-                .context(ks_err!("try_unlock_user_with_biometric failed user_id={user_id}"))
+            DB.with(|db| skm.try_unlock_user_with_biometric(&mut db.borrow_mut(), user))
+                .context(ks_err!("try_unlock_user_with_biometric failed for {user:?}"))
         }
     }
 
     fn on_device_locked(
         &self,
-        user_id: i32,
+        user: AndroidUserId,
         unlocking_sids: &[SecureUserId],
         weak_unlock_enabled: bool,
     ) -> Result<()> {
         info!(
-            "on_device_locked(user_id={user_id}, unlocking_sids={unlocking_sids:?}, weak_unlock_enabled={weak_unlock_enabled})",
+            "on_device_locked({user:?}, unlocking_sids={unlocking_sids:?}, weak_unlock_enabled={weak_unlock_enabled})",
         );
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
-        ENFORCEMENTS.set_device_locked(user_id, true);
+        ENFORCEMENTS.set_device_locked(user, true);
         let mut skm = SUPER_KEY.write().unwrap();
         DB.with(|db| {
             skm.lock_unlocked_device_required_keys(
                 &mut db.borrow_mut(),
-                user_id as u32,
+                user,
                 unlocking_sids,
                 weak_unlock_enabled,
             );
@@ -166,37 +166,37 @@ impl AuthorizationManager {
         Ok(())
     }
 
-    fn on_user_storage_locked(&self, user_id: i32) -> Result<()> {
-        log::info!("on_user_storage_locked(user_id={})", user_id);
+    fn on_user_storage_locked(&self, user: AndroidUserId) -> Result<()> {
+        log::info!("on_user_storage_locked({user:?})");
 
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
 
         // Delete super key in cache, if exists.
-        SUPER_KEY.write().unwrap().forget_all_keys_for_user(user_id as u32);
+        SUPER_KEY.write().unwrap().forget_all_keys_for_user(user);
 
         Ok(())
     }
 
-    fn on_weak_unlock_methods_expired(&self, user_id: i32) -> Result<()> {
-        info!("on_weak_unlock_methods_expired(user_id={user_id})");
+    fn on_weak_unlock_methods_expired(&self, user: AndroidUserId) -> Result<()> {
+        info!("on_weak_unlock_methods_expired({user:?})");
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
         SUPER_KEY
             .write()
             .unwrap()
-            .wipe_unlocked_device_required_keys(user_id as u32, WipeKeyOption::PlaintextOnly);
+            .wipe_unlocked_device_required_keys(user, WipeKeyOption::PlaintextOnly);
         Ok(())
     }
 
-    fn on_non_lskf_unlock_methods_expired(&self, user_id: i32) -> Result<()> {
-        info!("on_non_lskf_unlock_methods_expired(user_id={user_id})");
+    fn on_non_lskf_unlock_methods_expired(&self, user: AndroidUserId) -> Result<()> {
+        info!("on_non_lskf_unlock_methods_expired({user:?})");
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
-        SUPER_KEY.write().unwrap().wipe_unlocked_device_required_keys(
-            user_id as u32,
-            WipeKeyOption::PlaintextAndBiometric,
-        );
+        SUPER_KEY
+            .write()
+            .unwrap()
+            .wipe_unlocked_device_required_keys(user, WipeKeyOption::PlaintextAndBiometric);
         Ok(())
     }
 
@@ -251,6 +251,8 @@ impl AuthorizationManager {
 
 impl Interface for AuthorizationManager {}
 
+// The AIDL interface necessarily uses raw integer types for user ID / sid, so convert them to
+// internal newtypes as soon as they arrive.
 impl IKeystoreAuthorization for AuthorizationManager {
     fn addAuthToken(&self, auth_token: &HardwareAuthToken) -> BinderResult<()> {
         let _wp = wd::watch("IKeystoreAuthorization::addAuthToken");
@@ -258,8 +260,9 @@ impl IKeystoreAuthorization for AuthorizationManager {
     }
 
     fn onDeviceUnlocked(&self, user_id: i32, password: Option<&[u8]>) -> BinderResult<()> {
+        let user = AndroidUserId(user_id);
         let _wp = wd::watch("IKeystoreAuthorization::onDeviceUnlocked");
-        self.on_device_unlocked(user_id, password.map(|pw| pw.into())).map_err(into_logged_binder)
+        self.on_device_unlocked(user, password.map(|pw| pw.into())).map_err(into_logged_binder)
     }
 
     fn onDeviceLocked(
@@ -268,26 +271,29 @@ impl IKeystoreAuthorization for AuthorizationManager {
         unlocking_sids: &[i64],
         weak_unlock_enabled: bool,
     ) -> BinderResult<()> {
+        let user = AndroidUserId(user_id);
         let unlocking_sids: Vec<_> = unlocking_sids.iter().map(|sid| SecureUserId(*sid)).collect();
         let _wp = wd::watch("IKeystoreAuthorization::onDeviceLocked");
-        self.on_device_locked(user_id, &unlocking_sids, weak_unlock_enabled)
+        self.on_device_locked(user, &unlocking_sids, weak_unlock_enabled)
             .map_err(into_logged_binder)
     }
 
     fn onUserStorageLocked(&self, user_id: i32) -> BinderResult<()> {
-        log::info!("onUserStorageLocked(user={user_id})");
+        let user = AndroidUserId(user_id);
         let _wp = wd::watch("IKeystoreMaintenance::onUserStorageLocked");
-        self.on_user_storage_locked(user_id).map_err(into_logged_binder)
+        self.on_user_storage_locked(user).map_err(into_logged_binder)
     }
 
     fn onWeakUnlockMethodsExpired(&self, user_id: i32) -> BinderResult<()> {
+        let user = AndroidUserId(user_id);
         let _wp = wd::watch("IKeystoreAuthorization::onWeakUnlockMethodsExpired");
-        self.on_weak_unlock_methods_expired(user_id).map_err(into_logged_binder)
+        self.on_weak_unlock_methods_expired(user).map_err(into_logged_binder)
     }
 
     fn onNonLskfUnlockMethodsExpired(&self, user_id: i32) -> BinderResult<()> {
+        let user = AndroidUserId(user_id);
         let _wp = wd::watch("IKeystoreAuthorization::onNonLskfUnlockMethodsExpired");
-        self.on_non_lskf_unlock_methods_expired(user_id).map_err(into_logged_binder)
+        self.on_non_lskf_unlock_methods_expired(user).map_err(into_logged_binder)
     }
 
     fn getAuthTokensForCredStore(

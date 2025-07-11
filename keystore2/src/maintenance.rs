@@ -25,7 +25,8 @@ use crate::permission::{KeyPerm, KeystorePerm};
 use crate::super_key::SuperKeyManager;
 use crate::utils::{
     check_dump_permission, check_get_app_uids_affected_by_sid_permissions, check_key_permission,
-    check_keystore_permission, uid_to_android_user, watchdog as wd, SecureUserId
+    check_keystore_permission, watchdog as wd,
+    AndroidUserId, AppUid, SecureUserId,
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     ErrorCode::ErrorCode, IKeyMintDevice::IKeyMintDevice, KeyParameter::KeyParameter, KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
@@ -37,7 +38,7 @@ use android_security_maintenance::aidl::android::security::maintenance::IKeystor
     BnKeystoreMaintenance, IKeystoreMaintenance,
 };
 use android_security_maintenance::binder::{
-    BinderFeatures, Interface, Result as BinderResult, Strong, ThreadState,
+    BinderFeatures, Interface, Result as BinderResult, Strong,
 };
 use android_security_metrics::aidl::android::security::metrics::{
     KeystoreAtomPayload::KeystoreAtomPayload::StorageStats
@@ -87,7 +88,7 @@ pub trait DeleteListener {
     /// Called by the maintenance module when an app/namespace is deleted.
     fn delete_namespace(&self, domain: Domain, namespace: i64) -> Result<()>;
     /// Called by the maintenance module when a user is deleted.
-    fn delete_user(&self, user_id: u32) -> Result<()>;
+    fn delete_user(&self, user: AndroidUserId) -> Result<()>;
 }
 
 /// This struct is defined to implement the aforementioned AIDL interface.
@@ -106,27 +107,23 @@ impl Maintenance {
         ))
     }
 
-    fn add_or_remove_user(&self, user_id: i32) -> Result<()> {
+    fn add_or_remove_user(&self, user: AndroidUserId) -> Result<()> {
         // Check permission. Function should return if this failed. Therefore having '?' at the end
         // is very important.
         check_keystore_permission(KeystorePerm::ChangeUser).context(ks_err!())?;
 
         DB.with(|db| {
-            SUPER_KEY.write().unwrap().remove_user(
-                &mut db.borrow_mut(),
-                &LEGACY_IMPORTER,
-                user_id as u32,
-            )
+            SUPER_KEY.write().unwrap().remove_user(&mut db.borrow_mut(), &LEGACY_IMPORTER, user)
         })
-        .context(ks_err!("Trying to delete keys from db."))?;
+        .context(ks_err!("Trying to delete keys from db for {user:?}"))?;
         self.delete_listener
-            .delete_user(user_id as u32)
-            .context(ks_err!("While invoking the delete listener."))
+            .delete_user(user)
+            .context(ks_err!("While invoking the delete listener for {user:?}"))
     }
 
     fn init_user_super_keys(
         &self,
-        user_id: i32,
+        user: AndroidUserId,
         password: Password,
         allow_existing: bool,
     ) -> Result<()> {
@@ -138,25 +135,25 @@ impl Maintenance {
             skm.initialize_user(
                 &mut db.borrow_mut(),
                 &LEGACY_IMPORTER,
-                user_id as u32,
+                user,
                 &password,
                 allow_existing,
             )
         })
-        .context(ks_err!("Failed to initialize user super keys"))
+        .context(ks_err!("Failed to initialize user super keys for {user:?}"))
     }
 
     // Deletes all auth-bound keys when the user's LSKF is removed.
-    fn on_user_lskf_removed(user_id: i32) -> Result<()> {
+    fn on_user_lskf_removed(user: AndroidUserId) -> Result<()> {
         // Permission check. Must return on error. Do not touch the '?'.
         check_keystore_permission(KeystorePerm::ChangePassword).context(ks_err!())?;
 
         LEGACY_IMPORTER
-            .bulk_delete_user(user_id as u32, true)
-            .context(ks_err!("Failed to delete legacy keys."))?;
+            .bulk_delete_user(user, true)
+            .context(ks_err!("Failed to delete legacy keys for {user:?}"))?;
 
-        DB.with(|db| db.borrow_mut().unbind_auth_bound_keys_for_user(user_id as u32))
-            .context(ks_err!("Failed to delete auth-bound keys."))
+        DB.with(|db| db.borrow_mut().unbind_auth_bound_keys_for_user(user))
+            .context(ks_err!("Failed to delete auth-bound keys for {user:?}"))
     }
 
     fn clear_namespace(&self, domain: Domain, nspace: i64) -> Result<()> {
@@ -335,7 +332,7 @@ impl Maintenance {
     }
 
     fn migrate_key_namespace(source: &KeyDescriptor, destination: &KeyDescriptor) -> Result<()> {
-        let calling_uid = ThreadState::get_calling_uid();
+        let calling_uid = AppUid::calling();
 
         match source.domain {
             Domain::SELINUX | Domain::KEY_ID | Domain::APP => (),
@@ -353,9 +350,9 @@ impl Maintenance {
             }
         };
 
-        let user_id = uid_to_android_user(calling_uid);
+        let user = calling_uid.owning_user();
 
-        let super_key = SUPER_KEY.read().unwrap().get_credential_encrypted_key_by_user_id(user_id);
+        let super_key = SUPER_KEY.read().unwrap().get_credential_encrypted_key_by_user_id(user);
 
         DB.with(|db| {
             let (key_id_guard, _) = LEGACY_IMPORTER
@@ -390,13 +387,16 @@ impl Maintenance {
         Maintenance::call_on_all_security_levels("deleteAllKeys", |dev| dev.deleteAllKeys(), None)
     }
 
-    fn get_app_uids_affected_by_sid(user_id: i32, sid: SecureUserId) -> Result<std::vec::Vec<i64>> {
+    fn get_app_uids_affected_by_sid(
+        user: AndroidUserId,
+        sid: SecureUserId,
+    ) -> Result<std::vec::Vec<AppUid>> {
         // This method is intended to be called by Settings and discloses a list of apps
         // associated with a user, so it requires the "android.permission.MANAGE_USERS"
         // permission (to avoid leaking list of apps to unauthorized callers).
         check_get_app_uids_affected_by_sid_permissions().context(ks_err!())?;
-        DB.with(|db| db.borrow_mut().get_app_uids_affected_by_sid(user_id, sid))
-            .context(ks_err!("Failed to get app UIDs affected by {sid:?}"))
+        DB.with(|db| db.borrow_mut().get_app_uids_affected_by_sid(user, sid))
+            .context(ks_err!("Failed to get app UIDs for {user:?} affected by {sid:?}"))
     }
 
     fn dump_state(&self, f: &mut dyn std::io::Write) -> std::io::Result<()> {
@@ -572,11 +572,14 @@ impl Interface for Maintenance {
     }
 }
 
+// The AIDL interface necessarily uses raw integer types for uid/sid/user_id, so convert them to
+// internal newtypes as soon as they arrive (or just before they depart).
 impl IKeystoreMaintenance for Maintenance {
     fn onUserAdded(&self, user_id: i32) -> BinderResult<()> {
-        info!("onUserAdded(user={user_id})");
+        let user = AndroidUserId(user_id);
+        info!("onUserAdded({user:?})");
         let _wp = wd::watch("IKeystoreMaintenance::onUserAdded");
-        self.add_or_remove_user(user_id).map_err(into_logged_binder)
+        self.add_or_remove_user(user).map_err(into_logged_binder)
     }
 
     fn initUserSuperKeys(
@@ -585,22 +588,24 @@ impl IKeystoreMaintenance for Maintenance {
         password: &[u8],
         allow_existing: bool,
     ) -> BinderResult<()> {
-        info!("initUserSuperKeys(user={user_id}, allow_existing={allow_existing})");
+        let user = AndroidUserId(user_id);
+        info!("initUserSuperKeys({user:?}, allow_existing={allow_existing})");
         let _wp = wd::watch("IKeystoreMaintenance::initUserSuperKeys");
-        self.init_user_super_keys(user_id, password.into(), allow_existing)
-            .map_err(into_logged_binder)
+        self.init_user_super_keys(user, password.into(), allow_existing).map_err(into_logged_binder)
     }
 
     fn onUserRemoved(&self, user_id: i32) -> BinderResult<()> {
-        info!("onUserRemoved(user={user_id})");
+        let user = AndroidUserId(user_id);
+        info!("onUserRemoved({user:?})");
         let _wp = wd::watch("IKeystoreMaintenance::onUserRemoved");
-        self.add_or_remove_user(user_id).map_err(into_logged_binder)
+        self.add_or_remove_user(user).map_err(into_logged_binder)
     }
 
     fn onUserLskfRemoved(&self, user_id: i32) -> BinderResult<()> {
-        info!("onUserLskfRemoved(user={user_id})");
+        let user = AndroidUserId(user_id);
+        info!("onUserLskfRemoved({user:?})");
         let _wp = wd::watch("IKeystoreMaintenance::onUserLskfRemoved");
-        Self::on_user_lskf_removed(user_id).map_err(into_logged_binder)
+        Self::on_user_lskf_removed(user).map_err(into_logged_binder)
     }
 
     fn clearNamespace(&self, domain: Domain, nspace: i64) -> BinderResult<()> {
@@ -636,9 +641,11 @@ impl IKeystoreMaintenance for Maintenance {
         user_id: i32,
         secure_user_id: i64,
     ) -> BinderResult<std::vec::Vec<i64>> {
+        let user = AndroidUserId(user_id);
         let sid = SecureUserId(secure_user_id);
-        info!("getAppUidsAffectedBySid({user_id:?}, {sid:?})");
+        info!("getAppUidsAffectedBySid({user:?}, {sid:?})");
         let _wp = wd::watch("IKeystoreMaintenance::getAppUidsAffectedBySid");
-        Self::get_app_uids_affected_by_sid(user_id, sid).map_err(into_logged_binder)
+        let uids = Self::get_app_uids_affected_by_sid(user, sid).map_err(into_logged_binder)?;
+        Ok(uids.into_iter().map(|uid| uid.0).collect())
     }
 }
