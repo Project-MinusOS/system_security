@@ -133,7 +133,7 @@ use crate::error::{
 };
 use crate::ks_err;
 use crate::metrics_store::log_key_operation_event_stats;
-use crate::utils::watchdog as wd;
+use crate::utils::{watchdog as wd, AppUid};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     IKeyMintOperation::IKeyMintOperation, KeyParameter::KeyParameter, KeyPurpose::KeyPurpose,
     SecurityLevel::SecurityLevel,
@@ -179,7 +179,7 @@ pub struct Operation {
     km_op: Strong<dyn IKeyMintOperation>,
     last_usage: Mutex<Instant>,
     outcome: Mutex<Outcome>,
-    owner: u32, // Uid of the operation's owner.
+    owner: AppUid, // Uid of the operation's owner.
     auth_info: Mutex<AuthInfo>,
     forced: bool,
     logging_info: LoggingInfo,
@@ -208,7 +208,7 @@ impl LoggingInfo {
 
 struct PruningInfo {
     last_usage: Instant,
-    owner: u32,
+    owner: AppUid,
     index: usize,
     forced: bool,
 }
@@ -221,7 +221,7 @@ impl Operation {
     pub fn new(
         index: usize,
         km_op: binder::Strong<dyn IKeyMintOperation>,
-        owner: u32,
+        owner: AppUid,
         auth_info: AuthInfo,
         forced: bool,
         logging_info: LoggingInfo,
@@ -365,13 +365,13 @@ impl Operation {
             .lock()
             .unwrap()
             .before_update()
-            .context(ks_err!("Trying to get auth tokens for uid {}", self.owner))?;
+            .context(ks_err!("Trying to get auth tokens for {:?}", self.owner))?;
 
         self.update_outcome(&mut outcome, {
             let _wp = self.watch("Operation::update_aad: calling IKeyMintOperation::updateAad");
             map_km_error(self.km_op.updateAad(aad_input, hat.as_ref(), tst.as_ref()))
         })
-        .context(ks_err!("Update failed for uid {}", self.owner))?;
+        .context(ks_err!("Update failed for {:?}", self.owner))?;
 
         Ok(())
     }
@@ -388,14 +388,14 @@ impl Operation {
             .lock()
             .unwrap()
             .before_update()
-            .context(ks_err!("Trying to get auth tokens for uid {}", self.owner))?;
+            .context(ks_err!("Trying to get auth tokens for {:?}", self.owner))?;
 
         let output = self
             .update_outcome(&mut outcome, {
                 let _wp = self.watch("Operation::update: calling IKeyMintOperation::update");
                 map_km_error(self.km_op.update(input, hat.as_ref(), tst.as_ref()))
             })
-            .context(ks_err!("Update failed for uid {}", self.owner))?;
+            .context(ks_err!("Update failed for {:?}", self.owner))?;
 
         if output.is_empty() {
             Ok(None)
@@ -418,7 +418,7 @@ impl Operation {
             .lock()
             .unwrap()
             .before_finish()
-            .context(ks_err!("Trying to get auth tokens for uid {}", self.owner))?;
+            .context(ks_err!("Trying to get auth tokens for {:?}", self.owner))?;
 
         let output = self
             .update_outcome(&mut outcome, {
@@ -431,7 +431,7 @@ impl Operation {
                     confirmation_token.as_deref(),
                 ))
             })
-            .context(ks_err!("Finish failed for uid {}", self.owner))?;
+            .context(ks_err!("Finish failed for {:?}", self.owner))?;
 
         self.auth_info.lock().unwrap().after_finish().context("In finish.")?;
 
@@ -501,7 +501,7 @@ impl OperationDb {
     pub fn create_operation(
         &self,
         km_op: binder::Strong<dyn IKeyMintOperation>,
-        owner: u32,
+        owner: AppUid,
         auth_info: AuthInfo,
         forced: bool,
         logging_info: LoggingInfo,
@@ -619,13 +619,13 @@ impl OperationDb {
     /// ## Update
     /// We also allow callers to cannibalize their own sibling operations if no other
     /// slot can be found. In this case the least recently used sibling is pruned.
-    pub fn prune(&self, caller: u32, forced: bool) -> Result<(), Error> {
+    pub fn prune(&self, caller: AppUid, forced: bool) -> Result<(), Error> {
         loop {
             // Maps the uid of the owner to the number of operations that owner has
             // (running_siblings). More operations per owner lowers the pruning
             // resistance of the operations of that owner. Whereas the number of
             // ongoing operations of the caller lowers the pruning power of the caller.
-            let mut owners: HashMap<u32, u64> = HashMap::new();
+            let mut owners: HashMap<AppUid, u64> = HashMap::new();
             let mut pruning_info: Vec<PruningInfo> = Vec::new();
 
             let now = Instant::now();

@@ -21,6 +21,7 @@
 use crate::error::Error as KsError;
 use crate::error::ResponseCode;
 use crate::ks_err;
+use crate::utils::AppUid;
 use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor, KeyPermission::KeyPermission,
 };
@@ -282,14 +283,14 @@ pub fn check_keystore_permission(caller_ctx: &CStr, perm: KeystorePerm) -> anyho
 ///                      SELinux keystore key backend, and the result is used
 ///                      as target context.
 pub fn check_grant_permission(
-    caller_uid: u32,
+    caller_uid: AppUid,
     caller_ctx: &CStr,
     access_vec: KeyPermSet,
     key: &KeyDescriptor,
 ) -> anyhow::Result<()> {
     let target_context = match key.domain {
         Domain::APP => {
-            if caller_uid as i64 != key.nspace {
+            if caller_uid.0 != key.nspace {
                 return Err(selinux::Error::perm())
                     .context("Trying to access key without ownership.");
             }
@@ -337,7 +338,7 @@ pub fn check_grant_permission(
 ///                      was supplied. It is also produced if `Domain::KEY_ID` was selected, and
 ///                      on various unexpected backend failures.
 pub fn check_key_permission(
-    caller_uid: u32,
+    caller_uid: AppUid,
     caller_ctx: &CStr,
     perm: KeyPerm,
     key: &KeyDescriptor,
@@ -359,7 +360,7 @@ pub fn check_key_permission(
     let target_context = match key.domain {
         // apps get the default keystore context
         Domain::APP => {
-            if caller_uid as i64 != key.nspace {
+            if caller_uid.0 != key.nspace {
                 return Err(selinux::Error::perm())
                     .context("Trying to access key without ownership.");
             }
