@@ -39,17 +39,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
-use crate::utils::AesGcm;
+use crate::utils::{init_test_logging, AesGcm};
 #[cfg(disabled)]
 use std::time::Instant;
-
-fn init_logging() {
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_tag("keystore2_test")
-            .with_max_level(log::LevelFilter::Debug),
-    );
-}
 
 pub fn new_test_db() -> Result<KeystoreDB> {
     new_test_db_at("file::memory:")
@@ -2624,7 +2616,7 @@ fn test_blobentry_gc() -> Result<()> {
     // present.
     let fixed = keystore2_flags::remove_rebound_keyblobs_fix();
 
-    init_logging();
+    init_test_logging();
     let mut db = new_test_db()?;
 
     // Create 5 keys, and arrange things so the that the key IDs, aliases and namespace values
@@ -3019,7 +3011,7 @@ where
     F: Fn(&mut KeystoreDB, usize) -> T,
     P: Fn(&mut KeystoreDB),
 {
-    init_logging();
+    init_test_logging();
     // Put the test database on disk for a more realistic result.
     let db_root = tempfile::Builder::new().prefix("ks2db-test-").tempdir().unwrap();
     let mut db_path = db_root.path().to_owned();
@@ -3169,7 +3161,7 @@ fn test_upgrade_1_to_2_with_many_keys() -> Result<()> {
 }
 #[test]
 fn test_many_rebind_same_alias() -> Result<()> {
-    init_logging();
+    init_test_logging();
     let fixed = keystore2_flags::remove_rebound_keyblobs_fix();
 
     // Put the test database on disk for a more realistic result.

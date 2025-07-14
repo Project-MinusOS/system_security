@@ -49,6 +49,7 @@ use keystore2_apc_compat::{
 };
 use keystore2_crypto::{aes_gcm_decrypt, aes_gcm_encrypt, ZVec};
 use log::{debug, error, info, warn};
+use packagemanager_aidl::aidl::android::content::pm::IPackageManagerNative::IPackageManagerNative;
 use std::iter::IntoIterator;
 use std::thread::sleep;
 use std::time::Duration;
@@ -730,4 +731,73 @@ pub(crate) fn retry_get_interface<T: FromIBinder + ?Sized>(
         sleep(wait_time);
         wait_time *= 2;
     }
+}
+
+/// Return the target SDK version for a given app.
+///
+/// Involves round-trips to PackageManager.
+pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
+    let pm: Strong<dyn IPackageManagerNative> = match binder::get_interface("package_native") {
+        Ok(pm) => pm,
+        Err(e) => {
+            warn!("failed to connect to PackageManager: {e:?}");
+            return None;
+        }
+    };
+
+    let pkg_infos = match pm.getPackageInfoWithSigningInfoForUid(uid.0 as i32) {
+        Ok(Some(infos)) => infos,
+        Ok(None) => {
+            warn!("no package info for {uid:?}");
+            return None;
+        }
+        Err(e) => {
+            warn!("failed to get package info for {uid:?}: {e:?}");
+            return None;
+        }
+    };
+
+    let mut lowest_target_sdk = None;
+    for pkg_info in pkg_infos {
+        let Some(pkg_info) = pkg_info else {
+            continue;
+        };
+        let pkg_name = &pkg_info.packageName;
+        if pkg_name.is_empty() {
+            continue;
+        }
+        match pm.getTargetSdkVersionForPackage(pkg_name) {
+            Err(e) => {
+                warn!("failed to get target SDK version for {uid:?} '{pkg_name}': {e:?}");
+                continue;
+            }
+            Ok(target_sdk) if target_sdk <= 0 => {
+                warn!("unexpected target SDK version {target_sdk} for {uid:?} '{pkg_name}'");
+                continue;
+            }
+            Ok(target_sdk) => {
+                info!("{uid:?} '{pkg_name}' has target SDK {target_sdk:?}");
+                if let Some(prev_lowest) = lowest_target_sdk {
+                    if target_sdk < prev_lowest {
+                        lowest_target_sdk = Some(target_sdk);
+                    }
+                } else {
+                    lowest_target_sdk = Some(target_sdk);
+                }
+            }
+        };
+    }
+
+    info!("{uid:?} has target SDK {lowest_target_sdk:?}");
+    lowest_target_sdk
+}
+
+/// Enable logging in unit tests.
+#[cfg(test)]
+pub fn init_test_logging() {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_tag("keystore2_test")
+            .with_max_level(log::LevelFilter::Debug),
+    );
 }
