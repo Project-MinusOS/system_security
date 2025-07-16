@@ -76,11 +76,7 @@ fn binder_exception(ex: ExceptionCode) -> BinderResult<()> {
 
 #[test]
 fn keystore_error_test() -> anyhow::Result<(), String> {
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_tag("keystore_error_tests")
-            .with_max_level(log::LevelFilter::Debug),
-    );
+    crate::utils::init_test_logging();
     // All Error::Rc(x) get mapped on a service specific error
     // code of x.
     for rc in ResponseCode::LOCKED.0..ResponseCode::BACKEND_BUSY.0 {

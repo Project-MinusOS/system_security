@@ -253,7 +253,7 @@ pub fn getcon() -> Result<Context> {
 ///  * Ok(()) iff the requested access was granted.
 ///  * Err(anyhow!(Error::perm()))) if the permission was denied.
 ///  * Err(anyhow!(ioError::last_os_error())) if any other error occurred while performing
-///            the access check.
+///    the access check.
 pub fn check_access(source: &CStr, target: &CStr, tclass: &str, perm: &str) -> Result<()> {
     init_logger_once();
 

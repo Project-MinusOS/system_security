@@ -38,8 +38,8 @@ rust_library {
 
 rust_test {
     name: "keystore2_km_compat_test",
-    crate_name: "keystore2",
-    srcs: ["lib.rs"],
+    crate_name: "keystore2_km_compat_test",
+    srcs: ["tests.rs"],
     test_suites: ["general-tests"],
     auto_gen_config: true,
     defaults: [
@@ -47,6 +47,7 @@ rust_test {
     ],
     rustlibs: [
         "android.security.compat-rust",
+        "libkeystore2_km_compat",
     ],
     shared_libs: [
         "libkm_compat_service",
@@ -57,7 +58,7 @@ cc_library {
     name: "libkm_compat",
     srcs: ["km_compat.cpp"],
     defaults: [
-        "keymint_use_latest_hal_aidl_ndk_shared",
+        "keymint_cpp_impl_hal_aidl_ndk_shared",
     ],
     shared_libs: [
         "android.hardware.keymaster@3.0",
@@ -108,7 +109,7 @@ cc_test {
         "slot_test.cpp",
     ],
     defaults: [
-        "keymint_use_latest_hal_aidl_ndk_shared",
+        "keymint_cpp_impl_hal_aidl_ndk_shared",
     ],
     shared_libs: [
         "android.hardware.keymaster@3.0",
