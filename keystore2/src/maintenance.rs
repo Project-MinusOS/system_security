@@ -21,6 +21,7 @@ use crate::error::Error;
 use crate::globals::get_keymint_device;
 use crate::globals::{DB, ENCODED_MODULE_INFO, LEGACY_IMPORTER, SUPER_KEY};
 use crate::ks_err;
+use crate::metrics_store::{KEYS_PER_UID_MAX_UIDS, KEYS_PER_UID_MIN_KEY_COUNT};
 use crate::permission::{KeyPerm, KeystorePerm};
 use crate::super_key::SuperKeyManager;
 use crate::utils::{
@@ -433,16 +434,18 @@ impl Maintenance {
 
         if keystore2_flags::count_keys_per_uid() {
             // Display database top key counts per uid.
-            let max_uids = 10;
-            let min_count = 5;
-            writeln!(f, "Top-{max_uids} per-uid key counts (where > {min_count} keys):")?;
+            writeln!(f, "Top-{KEYS_PER_UID_MAX_UIDS} per-uid key counts (where > {KEYS_PER_UID_MIN_KEY_COUNT} keys):")?;
             DB.with(|db| -> std::io::Result<()> {
                 let mut db = db.borrow_mut();
-                let counts = db.per_uid_counts(max_uids, min_count).unwrap_or_else(|e| {
-                    log::error!("failed to retrieve top {max_uids} per-uid counts: {e:?}");
-                    let _ = writeln!(f, "  DB retrieval failed: {e:?}");
-                    Vec::new()
-                });
+                let counts = db
+                    .per_uid_counts(KEYS_PER_UID_MAX_UIDS, KEYS_PER_UID_MIN_KEY_COUNT)
+                    .unwrap_or_else(|e| {
+                        log::error!(
+                            "failed to retrieve top {KEYS_PER_UID_MAX_UIDS} per-uid counts: {e:?}"
+                        );
+                        let _ = writeln!(f, "  DB retrieval failed: {e:?}");
+                        Vec::new()
+                    });
                 for (uid, count) in counts {
                     writeln!(f, "  uid={uid:<8}: key_count: {count}")?;
                 }
