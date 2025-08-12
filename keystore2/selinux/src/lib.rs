@@ -141,7 +141,7 @@ impl Context {
     pub fn new(con: &str) -> Result<Self> {
         Ok(Self::CString(
             CString::new(con)
-                .with_context(|| format!("Failed to create Context with \"{}\"", con))?,
+                .with_context(|| format!("Failed to create Context with \"{con}\""))?,
         ))
     }
 }
@@ -198,7 +198,7 @@ impl Backend for KeystoreKeyBackend {
     fn lookup(&self, key: &str) -> Result<Context> {
         let mut con: *mut c_char = ptr::null_mut();
         let c_key = CString::new(key).with_context(|| {
-            format!("selabel_lookup: Failed to convert key \"{}\" to CString.", key)
+            format!("selabel_lookup: Failed to convert key \"{key}\" to CString.")
         })?;
         match unsafe {
             // No need to initialize the logger here because it cannot run unless
@@ -212,13 +212,12 @@ impl Backend for KeystoreKeyBackend {
                     Ok(Context::Raw(con))
                 } else {
                     Err(anyhow!(Error::sys(format!(
-                        "selabel_lookup returned a NULL context for key \"{}\"",
-                        key
+                        "selabel_lookup returned a NULL context for key \"{key}\""
                     ))))
                 }
             }
             _ => Err(anyhow!(io::Error::last_os_error()))
-                .with_context(|| format!("selabel_lookup failed for key \"{}\"", key)),
+                .with_context(|| format!("selabel_lookup failed for key \"{key}\"")),
         }
     }
 }
@@ -258,11 +257,10 @@ pub fn check_access(source: &CStr, target: &CStr, tclass: &str, perm: &str) -> R
     init_logger_once();
 
     let c_tclass = CString::new(tclass).with_context(|| {
-        format!("check_access: Failed to convert tclass \"{}\" to CString.", tclass)
+        format!("check_access: Failed to convert tclass \"{tclass}\" to CString.")
     })?;
-    let c_perm = CString::new(perm).with_context(|| {
-        format!("check_access: Failed to convert perm \"{}\" to CString.", perm)
-    })?;
+    let c_perm = CString::new(perm)
+        .with_context(|| format!("check_access: Failed to convert perm \"{perm}\" to CString."))?;
 
     match unsafe {
         let _lock = LIB_SELINUX_LOCK.lock().unwrap();

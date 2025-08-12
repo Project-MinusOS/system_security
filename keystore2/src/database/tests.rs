@@ -447,8 +447,8 @@ fn test_grant_ungrant() -> Result<()> {
     }
 
     debug_dump_keyentry_table(&mut db)?;
-    println!("app_key {:?}", app_key);
-    println!("selinux_key {:?}", selinux_key);
+    println!("app_key {app_key:?}");
+    println!("selinux_key {selinux_key:?}");
 
     db.ungrant(&app_key, CALLER_UID, GRANTEE_UID, |_| Ok(()))?;
     db.ungrant(&selinux_key, CALLER_UID, GRANTEE_UID, |_| Ok(()))?;
@@ -1475,7 +1475,7 @@ fn list() -> Result<()> {
         .map(|(domain, ns, alias)| {
             let entry =
                 make_test_key_entry(&mut db, *domain, *ns, alias, None).unwrap_or_else(|e| {
-                    panic!("Failed to insert {:?} {} {}. Error {:?}", domain, ns, alias, e)
+                    panic!("Failed to insert {domain:?} {ns} {alias}. Error {e:?}")
                 });
             (entry.id(), *ns)
         })
@@ -1540,13 +1540,8 @@ fn list() -> Result<()> {
 // Checks that the given result is an error containing the given string.
 fn check_result_is_error_containing_string<T>(result: Result<T>, target: &str) {
     let error_str =
-        format!("{:#?}", result.err().unwrap_or_else(|| panic!("Expected the error: {}", target)));
-    assert!(
-        error_str.contains(target),
-        "The string \"{}\" should contain \"{}\"",
-        error_str,
-        target
-    );
+        format!("{:#?}", result.err().unwrap_or_else(|| panic!("Expected the error: {target}")));
+    assert!(error_str.contains(target), "The string \"{error_str}\" should contain \"{target}\"");
 }
 
 #[derive(Debug, PartialEq)]
@@ -1996,8 +1991,7 @@ fn debug_dump_keyentry_table(db: &mut KeystoreDB) -> Result<()> {
     for r in rows {
         let (id, key_type, domain, namespace, alias, state, km_uuid) = r.unwrap();
         println!(
-            "    id: {} KeyType: {:?} Domain: {} Namespace: {} Alias: {} State: {:?} KmUuid: {:?}",
-            id, key_type, domain, namespace, alias, state, km_uuid
+            "    id: {id} KeyType: {key_type:?} Domain: {domain} Namespace: {namespace} Alias: {alias} State: {state:?} KmUuid: {km_uuid:?}"
         );
     }
     Ok(())
@@ -2013,7 +2007,7 @@ fn debug_dump_grant_table(db: &mut KeystoreDB) -> Result<()> {
     println!("Grant table rows:");
     for r in rows {
         let (id, gt, ki, av) = r.unwrap();
-        println!("    id: {} grantee: {} key_id: {} access_vector: {}", id, gt, ki, av);
+        println!("    id: {id} grantee: {gt} key_id: {ki} access_vector: {av}");
     }
     Ok(())
 }
@@ -2474,7 +2468,7 @@ fn test_verify_key_table_size_reporting() -> Result<()> {
         sum += stat.size;
     }
     let total = db.get_storage_stat(MetricsStorage::DATABASE)?.size;
-    assert!(sum <= total, "Expected sum <= total. sum: {}, total: {}", sum, total);
+    assert!(sum <= total, "Expected sum <= total. sum: {sum}, total: {total}");
 
     Ok(())
 }

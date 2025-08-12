@@ -509,7 +509,7 @@ mod tests {
         for (sec_level, params, want) in tests {
             let v1 = KeyMintV1::new(sec_level);
             let got = v1.emulation_required(&params, &KeyImportData::None);
-            assert_eq!(got, want, "emulation_required({:?})={}, want {}", params, got, want);
+            assert_eq!(got, want, "emulation_required({params:?})={got}, want {want}");
         }
     }
 
@@ -599,7 +599,7 @@ mod tests {
         for (sec_level, params, want) in tests {
             let v0 = Keymaster::new(sec_level);
             let got = v0.emulation_required(&params, &KeyImportData::None);
-            assert_eq!(got, want, "emulation_required({:?})={}, want {}", params, got, want);
+            assert_eq!(got, want, "emulation_required({params:?})={got}, want {want}");
         }
     }
 }

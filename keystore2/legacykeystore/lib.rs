@@ -716,7 +716,7 @@ mod db_test {
                 actual_entry_count = count;
                 break;
             }
-            let alias = format!("test_alias_{}", count);
+            let alias = format!("test_alias_{count}");
             db.put(AppUid(1), &alias, TEST_BLOB1).expect("Failed to add entry (1).");
         }
 
@@ -729,7 +729,7 @@ mod db_test {
                 if Instant::now().duration_since(test_begin) >= Duration::from_secs(40) {
                     return;
                 }
-                let alias = format!("test_alias_{}", count);
+                let alias = format!("test_alias_{count}");
                 db.put(AppUid(2), &alias, TEST_BLOB2).expect("Failed to add entry (2).");
             }
 
@@ -738,7 +738,7 @@ mod db_test {
                 if Instant::now().duration_since(test_begin) >= Duration::from_secs(40) {
                     return;
                 }
-                let alias = format!("test_alias_{}", count);
+                let alias = format!("test_alias_{count}");
                 db.remove(AppUid(2), &alias).expect("Remove Failed (2).");
             }
         });
@@ -752,7 +752,7 @@ mod db_test {
                 if Instant::now().duration_since(test_begin) >= Duration::from_secs(40) {
                     return;
                 }
-                let alias = format!("test_alias_{}", count);
+                let alias = format!("test_alias_{count}");
                 db.remove(AppUid(1), &alias).expect("Remove Failed (1)).");
             }
         });

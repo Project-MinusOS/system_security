@@ -53,7 +53,7 @@ impl TempDir {
         let tmp = loop {
             let mut tmp = temp_dir();
             let number: u16 = rand::random();
-            tmp.push(format!("{}_{:05}", prefix, number));
+            tmp.push(format!("{prefix}_{number:05}"));
             match create_dir(&tmp) {
                 Err(e) => match e.kind() {
                     ErrorKind::AlreadyExists => continue,

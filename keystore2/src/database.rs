@@ -1864,7 +1864,7 @@ impl KeystoreDB {
             Domain::SELINUX => (*destination).clone(),
             domain => {
                 return Err(KsError::Rc(ResponseCode::INVALID_ARGUMENT))
-                    .context(format!("Domain {:?} must be either APP or SELINUX.", domain));
+                    .context(format!("Domain {domain:?} must be either APP or SELINUX."));
             }
         };
 
@@ -1905,7 +1905,7 @@ impl KeystoreDB {
 
             if updated != 1 {
                 return Err(KsError::sys())
-                    .context(format!("Update succeeded, but {} rows were updated.", updated));
+                    .context(format!("Update succeeded, but {updated} rows were updated."));
             }
             Ok(()).no_gc()
         })
