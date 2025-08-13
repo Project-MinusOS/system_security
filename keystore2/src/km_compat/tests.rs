@@ -65,7 +65,7 @@ fn test_get_hardware_info() {
 fn test_add_rng_entropy() {
     let legacy = get_device_or_skip_test!();
     let result = legacy.addRngEntropy(&[42; 16]);
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
 }
 
 // TODO: If I only need the key itself, don't return the other things.
@@ -180,14 +180,14 @@ fn test_delete_key() {
     let legacy = get_device_or_skip_test!();
     let blob = generate_rsa_key(legacy.as_ref(), false, false);
     let result = legacy.deleteKey(&blob);
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
 fn test_delete_all_keys() {
     let legacy = get_device_or_skip_test!();
     let result = legacy.deleteAllKeys();
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn begin(
         kps.append(&mut extras);
     }
     let result = legacy.begin(purpose, blob, &kps, None);
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     result.unwrap()
 }
 
@@ -250,7 +250,7 @@ fn test_begin_abort() {
     let begin_result = begin(legacy.as_ref(), &blob, KeyPurpose::ENCRYPT, None);
     let operation = begin_result.operation.unwrap();
     let result = operation.abort();
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     let result = operation.abort();
     assert!(result.is_err());
 }
@@ -268,7 +268,7 @@ fn test_begin_update_finish() {
         None, /* authToken */
         None, /* timestampToken */
     );
-    assert!(update_aad_result.is_ok(), "{:?}", update_aad_result);
+    assert!(update_aad_result.is_ok(), "{update_aad_result:?}");
 
     let message = [42; 128];
     let result = operation.finish(
@@ -278,7 +278,7 @@ fn test_begin_update_finish() {
         None, /* timestampToken */
         None, /* confirmationToken */
     );
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     let ciphertext = result.unwrap();
     assert!(!ciphertext.is_empty());
 
@@ -292,11 +292,11 @@ fn test_begin_update_finish() {
         None, /* authToken */
         None, /* timestampToken */
     );
-    assert!(update_aad_result.is_ok(), "{:?}", update_aad_result);
+    assert!(update_aad_result.is_ok(), "{update_aad_result:?}");
 
     let result =
         operation.update(&ciphertext, None /* authToken */, None /* timestampToken */);
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     assert_eq!(result.unwrap(), message);
     let result = operation.finish(
         None, /* input */
@@ -305,7 +305,7 @@ fn test_begin_update_finish() {
         None, /* timestampToken */
         None, /* confirmationToken */
     );
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
@@ -329,7 +329,7 @@ fn test_secure_clock() {
 
     let challenge = 42;
     let result = secure_clock.generateTimeStamp(challenge);
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     let result = result.unwrap();
     assert_eq!(result.challenge, challenge);
     assert_eq!(result.mac.len(), 32);
@@ -355,11 +355,11 @@ fn test_shared_secret() {
     };
 
     let result = shared_secret.getSharedSecretParameters();
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     let params = result.unwrap();
 
     let result = shared_secret.computeSharedSecret(&[params]);
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     assert_ne!(result.unwrap().len(), 0);
 }
 

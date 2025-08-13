@@ -200,14 +200,14 @@ fn keymint_service_name(security_level: &SecurityLevel) -> Result<Option<String>
     let service_name = match *security_level {
         SecurityLevel::TRUSTED_ENVIRONMENT => {
             if keymint_instances.iter().any(|instance| *instance == "default") {
-                Some(format!("{}/default", keymint_descriptor))
+                Some(format!("{keymint_descriptor}/default"))
             } else {
                 None
             }
         }
         SecurityLevel::STRONGBOX => {
             if keymint_instances.iter().any(|instance| *instance == "strongbox") {
-                Some(format!("{}/strongbox", keymint_descriptor))
+                Some(format!("{keymint_descriptor}/strongbox"))
             } else {
                 None
             }
@@ -378,7 +378,7 @@ fn connect_secureclock() -> Result<Strong<dyn ISecureClock>> {
     let secure_clock_available =
         secureclock_instances.iter().any(|instance| *instance == "default");
 
-    let default_time_stamp_service_name = format!("{}/default", secure_clock_descriptor);
+    let default_time_stamp_service_name = format!("{secure_clock_descriptor}/default");
 
     let secureclock = if secure_clock_available {
         map_binder_status_code(binder::get_interface(&default_time_stamp_service_name))
@@ -425,7 +425,7 @@ pub fn get_remotely_provisioned_component_name(security_level: &SecurityLevel) -
 
     match *security_level {
         SecurityLevel::TRUSTED_ENVIRONMENT => {
-            let instance = format!("{}/default", remote_prov_descriptor);
+            let instance = format!("{remote_prov_descriptor}/default");
             if is_declared(&instance)? {
                 Some(instance)
             } else {
@@ -433,7 +433,7 @@ pub fn get_remotely_provisioned_component_name(security_level: &SecurityLevel) -
             }
         }
         SecurityLevel::STRONGBOX => {
-            let instance = format!("{}/strongbox", remote_prov_descriptor);
+            let instance = format!("{remote_prov_descriptor}/strongbox");
             if is_declared(&instance)? {
                 Some(instance)
             } else {

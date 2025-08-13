@@ -356,7 +356,7 @@ pub unsafe fn execute_op_run_as_child(
                     Err(Error::Km(ErrorCode::INVALID_OPERATION_HANDLE)) => {
                         TestOutcome::InvalidHandle
                     }
-                    Err(e) => panic!("Error in performing op: {:#?}", e),
+                    Err(e) => panic!("Error in performing op: {e:#?}"),
                 }
             }
             Ok(_) => TestOutcome::OtherErr,
@@ -610,18 +610,18 @@ pub fn get_attest_id_value(attest_id: Tag, prop_name: &str) -> Option<Vec<u8>> {
     match attest_id {
         Tag::ATTESTATION_ID_IMEI => get_imei(0),
         Tag::ATTESTATION_ID_SECOND_IMEI => get_imei(1),
-        Tag::ATTESTATION_ID_SERIAL => Some(get_system_prop(format!("ro.{}", prop_name).as_str())),
+        Tag::ATTESTATION_ID_SERIAL => Some(get_system_prop(format!("ro.{prop_name}").as_str())),
         _ => {
             let prop_val =
-                get_system_prop(format!("ro.product.{}_for_attestation", prop_name).as_str());
+                get_system_prop(format!("ro.product.{prop_name}_for_attestation").as_str());
             if !prop_val.is_empty() {
                 Some(prop_val)
             } else {
-                let prop_val = get_system_prop(format!("ro.product.vendor.{}", prop_name).as_str());
+                let prop_val = get_system_prop(format!("ro.product.vendor.{prop_name}").as_str());
                 if !prop_val.is_empty() {
                     Some(prop_val)
                 } else {
-                    Some(get_system_prop(format!("ro.product.{}", prop_name).as_str()))
+                    Some(get_system_prop(format!("ro.product.{prop_name}").as_str()))
                 }
             }
         }

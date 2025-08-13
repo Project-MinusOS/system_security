@@ -87,7 +87,7 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_key_size() {
     let sl = SecLevel::tee();
 
     for key_size in 0..513 {
-        let alias = format!("ks_hmac_test_key_{}", key_size);
+        let alias = format!("ks_hmac_test_key_{key_size}");
         let result = key_generations::map_ks_error(key_generations::generate_hmac_key(
             &sl,
             &alias,
@@ -103,7 +103,7 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_key_size() {
             }
             Err(e) => {
                 assert_eq!(e, Error::Km(ErrorCode::UNSUPPORTED_KEY_SIZE));
-                assert!((key_size < 64 || key_size % 8 != 0), "Unsupported KeySize: {}", key_size);
+                assert!((key_size < 64 || key_size % 8 != 0), "Unsupported KeySize: {key_size}");
             }
         }
     }
@@ -119,7 +119,7 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_min_mac_length() {
     let sl = SecLevel::tee();
 
     for min_mac_len in 0..257 {
-        let alias = format!("ks_hmac_test_key_mml_{}", min_mac_len);
+        let alias = format!("ks_hmac_test_key_mml_{min_mac_len}");
         match key_generations::map_ks_error(key_generations::generate_hmac_key(
             &sl,
             &alias,
@@ -135,8 +135,7 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_min_mac_length() {
                 assert_eq!(e, Error::Km(ErrorCode::UNSUPPORTED_MIN_MAC_LENGTH));
                 assert!(
                     (min_mac_len < 64 || min_mac_len % 8 != 0),
-                    "Unsupported MinMacLength: {}",
-                    min_mac_len
+                    "Unsupported MinMacLength: {min_mac_len}"
                 );
             }
         }

@@ -939,7 +939,7 @@ impl LegacyBlobLoader {
     /// user_<android user id>/<uid>_<prefix>_<alias>.
     fn make_blob_filename(&self, uid: AppUid, alias: &str, prefix: &str) -> PathBuf {
         let user = uid.owning_user();
-        let encoded_alias = Self::encode_alias(&format!("{}_{}", prefix, alias));
+        let encoded_alias = Self::encode_alias(&format!("{prefix}_{alias}"));
         let mut path = self.make_user_path_name(user);
         path.push(format!("{}_{}", uid.0, encoded_alias));
         path
@@ -949,7 +949,7 @@ impl LegacyBlobLoader {
     /// user_<android user id>/.<uid>_chr_<prefix>_<alias>.
     fn make_chr_filename(&self, uid: AppUid, alias: &str, prefix: &str) -> PathBuf {
         let user_id = uid.owning_user();
-        let encoded_alias = Self::encode_alias(&format!("{}_{}", prefix, alias));
+        let encoded_alias = Self::encode_alias(&format!("{prefix}_{alias}"));
         let mut path = self.make_user_path_name(user_id);
         path.push(format!(".{}_chr_{}", uid.0, encoded_alias));
         path

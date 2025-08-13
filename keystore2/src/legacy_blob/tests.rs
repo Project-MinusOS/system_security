@@ -70,7 +70,7 @@ fn decode_encode_alias_test() {
         let encoded = LegacyBlobLoader::encode_alias(&alias_str);
         let decoded = match LegacyBlobLoader::decode_alias(&encoded) {
             Ok(d) => d,
-            Err(_) => panic!("random_alias: {:x?}\nencoded {}", random_alias, encoded),
+            Err(_) => panic!("random_alias: {random_alias:x?}\nencoded {encoded}"),
         };
         assert_eq!(random_alias.to_vec(), decoded.bytes().collect::<Vec<u8>>());
     }

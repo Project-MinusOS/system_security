@@ -105,7 +105,7 @@ fn keystore_error_test() -> anyhow::Result<(), String> {
         assert_eq!(
             Result::<(), i32>::Err(ec),
             map_km_error(binder_sse_error(ec))
-                .with_context(|| format!("Km error code: {}.", ec))
+                .with_context(|| format!("Km error code: {ec}."))
                 .map_err(into_logged_binder)
                 .map_err(|s| s.service_specific_error())
         );
@@ -172,13 +172,11 @@ pub fn check_result_contains_error_string<T>(
 ) {
     let error_str = format!(
         "{:#?}",
-        result.err().unwrap_or_else(|| panic!("Expected the error: {}", expected_error_string))
+        result.err().unwrap_or_else(|| panic!("Expected the error: {expected_error_string}"))
     );
     assert!(
         error_str.contains(expected_error_string),
-        "The string \"{}\" should contain \"{}\"",
-        error_str,
-        expected_error_string
+        "The string \"{error_str}\" should contain \"{expected_error_string}\""
     );
 }
 

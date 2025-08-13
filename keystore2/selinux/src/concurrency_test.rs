@@ -79,7 +79,7 @@ fn test_concurrent_check_access() {
     let mut threads: Vec<thread::JoinHandle<()>> = Vec::new();
 
     for i in 0..cpus {
-        info!("Spawning thread {}", i);
+        info!("Spawning thread {i}");
         let turnpike_clone = turnpike.clone();
         let complete_count_clone = complete_count.clone();
         threads.push(thread::spawn(move || {
@@ -147,7 +147,7 @@ fn test_concurrent_check_access() {
         }
 
         // Give the threads some time to reach and spin on the turn pike.
-        assert_eq!(turnpike.load(Ordering::Relaxed) as usize, cpus, "i = {}", i);
+        assert_eq!(turnpike.load(Ordering::Relaxed) as usize, cpus, "i = {i}");
         if i >= TEST_ITERATIONS {
             turnpike.store(255, Ordering::Relaxed);
             break;

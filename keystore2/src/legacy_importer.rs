@@ -196,7 +196,7 @@ impl LegacyImporter {
                         .context(ks_err!("Legacy loader should not be called uninitialized."));
                 }
                 (Self::STATE_READY, _) => return Ok(Self::STATE_READY),
-                (s, _) => panic!("Unknown legacy importer state. {} ", s),
+                (s, _) => panic!("Unknown legacy importer state. {s} "),
             }
         }
     }
@@ -237,7 +237,7 @@ impl LegacyImporter {
             Ok(LegacyImporter::STATE_EMPTY) => return None,
             Ok(LegacyImporter::STATE_READY) => {}
             Err(e) => return Some(Err(e)),
-            Ok(s) => panic!("Unknown legacy importer state. {} ", s),
+            Ok(s) => panic!("Unknown legacy importer state. {s} "),
         }
 
         // We have established that there may be a key in the legacy database.
@@ -320,7 +320,7 @@ impl LegacyImporter {
                     Self::WIFI_NAMESPACE => Self::AID_WIFI,
                     _ => {
                         return Err(Error::Rc(ResponseCode::KEY_NOT_FOUND))
-                            .context(format!("No legacy keys for namespace {}", nspace))
+                            .context(format!("No legacy keys for namespace {nspace}"))
                     }
                 }
             }
