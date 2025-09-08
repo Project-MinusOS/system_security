@@ -58,7 +58,7 @@ cc_library {
     name: "libkm_compat",
     srcs: ["km_compat.cpp"],
     defaults: [
-        "keymint_cpp_impl_hal_aidl_ndk_shared",
+        "keymint_use_latest_hal_aidl_ndk_shared",
     ],
     shared_libs: [
         "android.hardware.keymaster@3.0",
@@ -72,7 +72,9 @@ cc_library {
         "libcrypto",
         "libhidlbase",
         "libkeymaster4_1support",
-        "libkeymint",
+        // The C++ KeyMint implementation actually only supports KeyMint v4, but pretend
+        // it is the latest version to avoid mismatched AIDL versions.
+        "libkeymint_fake_latest",
         "libkeymint_support",
         "libkeystore2_crypto",
         "libutils",
@@ -109,7 +111,7 @@ cc_test {
         "slot_test.cpp",
     ],
     defaults: [
-        "keymint_cpp_impl_hal_aidl_ndk_shared",
+        "keymint_use_latest_hal_aidl_ndk_shared",
     ],
     shared_libs: [
         "android.hardware.keymaster@3.0",
