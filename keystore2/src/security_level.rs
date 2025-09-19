@@ -52,7 +52,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     Algorithm::Algorithm, AttestationKey::AttestationKey, Certificate::Certificate,
     HardwareAuthenticatorType::HardwareAuthenticatorType, IKeyMintDevice::IKeyMintDevice,
     KeyCreationResult::KeyCreationResult, KeyFormat::KeyFormat,
-    KeyMintHardwareInfo::KeyMintHardwareInfo, KeyParameter::KeyParameter,
+    KeyMintHardwareInfo::KeyMintHardwareInfo, KeyOrigin::KeyOrigin, KeyParameter::KeyParameter,
     KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_hardware_security_keymint::binder::{BinderFeatures, Strong, ThreadState};
@@ -1068,7 +1068,7 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         // time than other operations
         let _wp = self.watch_millis("IKeystoreSecurityLevel::generateKey", 5000);
         let result = self.generate_key(key, attestation_key, params, flags, entropy);
-        log_key_creation_event_stats(self.security_level, params, &result);
+        log_key_creation_event_stats(self.security_level, params, KeyOrigin::GENERATED, &result);
         log_key_generated(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
@@ -1082,7 +1082,7 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importKey");
         let result = self.import_key(key, attestation_key, params, flags, key_data);
-        log_key_creation_event_stats(self.security_level, params, &result);
+        log_key_creation_event_stats(self.security_level, params, KeyOrigin::IMPORTED, &result);
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
@@ -1097,7 +1097,12 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         let _wp = self.watch("IKeystoreSecurityLevel::importWrappedKey");
         let result =
             self.import_wrapped_key(key, wrapping_key, masking_key, params, authenticators);
-        log_key_creation_event_stats(self.security_level, params, &result);
+        log_key_creation_event_stats(
+            self.security_level,
+            params,
+            KeyOrigin::SECURELY_IMPORTED,
+            &result,
+        );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
