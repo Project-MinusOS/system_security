@@ -17,37 +17,27 @@ package {
 }
 
 rust_library {
-    name: "libhal_wire",
-    crate_name: "hal_wire",
+    name: "libhal_ta",
+    crate_name: "hal_ta",
     srcs: ["src/lib.rs"],
     host_supported: true,
     vendor_available: true,
     edition: "2021",
     lints: "android",
     rustlibs: [
-        "libciborium",
-        "libciborium_io",
-    ],
-    proc_macros: [
-        "libenumn",
-        "libhal_wire_derive",
+        "libhal_wire",
     ],
 }
 
 rust_library_rlib {
-    name: "libhal_wire_nostd",
-    crate_name: "hal_wire",
+    name: "libhal_ta_nostd",
+    crate_name: "hal_ta",
     srcs: ["src/lib.rs"],
     vendor_available: true,
     edition: "2021",
     lints: "android",
     rustlibs: [
-        "libciborium_nostd",
-        "libciborium_io_nostd",
-    ],
-    proc_macros: [
-        "libenumn",
-        "libhal_wire_derive",
+        "libhal_wire_nostd",
     ],
     prefer_rlib: true,
     no_stdlibs: true,

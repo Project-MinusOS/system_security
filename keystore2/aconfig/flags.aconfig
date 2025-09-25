@@ -59,3 +59,14 @@ flag {
   bug: "432211581"
   is_fixed_read_only: true
 }
+
+flag {
+  name: "extra_sqlite_sync"
+  namespace: "hardware_backed_security"
+  description: "Enable synchronous=EXTRA for SQLite database"
+  bug: "354869460"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+  is_fixed_read_only: true
+}

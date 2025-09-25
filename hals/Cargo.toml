@@ -1,10 +1,12 @@
 [workspace]
 members = [
   "derive",
+  "ta",
   "wire",
 ]
 resolver = "2"
 
 [patch.crates-io]
+hal-ta = { path = "ta" }
 hal-wire-derive = { path = "derive" }
 hal-wire = { path = "wire" }

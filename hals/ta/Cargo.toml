@@ -2,13 +2,11 @@
 # tool).  This Cargo.toml file is included purely for the convenience of developers.
 
 [package]
-name = "hal-wire"
+name = "hal-ta"
 version = "0.1.0"
-authors = ["David Drysdale <drysdale@google.com>"]
+authors = ["David Drysdale <drysdale@google.com>", "Karuna Wadhera <kwadhera@google.com>"]
 edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-ciborium = { version = "^0.2.2", default-features = false }
-ciborium-io = "^0.2.0"
-enumn = "0.1.4"
+hal-wire = { path = "../wire" }
