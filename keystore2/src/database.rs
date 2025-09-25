@@ -1199,6 +1199,12 @@ impl KeystoreDB {
         conn.execute("PRAGMA persistent.cache_size = -500;", params![])
             .context("Failed to decrease cache size for persistent db")?;
 
+        if keystore2_flags::extra_sqlite_sync() {
+            log::info!("Setting synchronous=EXTRA");
+            conn.execute("PRAGMA persistent.synchronous = EXTRA;", params![])
+                .context("Failed to set synchronous mode to EXTRA")?;
+        }
+
         Ok(conn)
     }
 
@@ -1438,7 +1444,7 @@ impl KeystoreDB {
                       WHERE keyentryid NOT IN (
                         SELECT id FROM persistent.keyentry
                       )
-                      LIMIT 100000);",
+                      LIMIT 5000);",
                     params![BlobState::Orphaned],
                 )
                 .context("Trying to mark orphaned blobs")
