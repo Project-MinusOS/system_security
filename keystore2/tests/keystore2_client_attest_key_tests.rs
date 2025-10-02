@@ -35,7 +35,7 @@ use keystore2_test_utils::{
     authorizations, key_generations, key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::getuid;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 /// Generate RSA and EC attestation keys and use them for signing RSA-signing keys.
 /// Test should be able to generate attestation keys and use them successfully.

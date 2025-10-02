@@ -60,7 +60,7 @@ impl RemProvState {
             _ => return default_value,
         };
 
-        rustutils::system_properties::read_bool(property_name, default_value)
+        rustutils::android::system_properties::read_bool(property_name, default_value)
             .unwrap_or(default_value)
     }
 

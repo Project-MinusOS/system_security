@@ -28,7 +28,7 @@ use keystore2::utils::AesGcm;
 use keystore2_crypto::{Password, ZVec};
 use keystore2_test_utils::{get_keystore_service, key_generations, run_as, SecLevel};
 use nix::unistd::getuid;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::{system_properties, users::{self, AID_USER_OFFSET}};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ static AUTH_SERVICE_NAME: &str = "android.security.authorization";
 const SELINUX_SHELL_NAMESPACE: i64 = 1;
 
 fn rkp_only() -> bool {
-    matches!(rustutils::system_properties::read("remote_provisioning.tee.rkp_only"), Ok(Some(v)) if v == "1")
+    matches!(system_properties::read("remote_provisioning.tee.rkp_only"), Ok(Some(v)) if v == "1")
 }
 
 fn get_maintenance() -> binder::Strong<dyn IKeystoreMaintenance> {
@@ -126,8 +126,8 @@ fn keystore2_restart_service() {
 ///     9. Confirm keystore2 service cleanup the legacy blobs after successful import.
 #[test]
 fn keystore2_encrypted_characteristics() -> anyhow::Result<()> {
-    let auid = 99 * AID_USER_OFFSET + 10001;
-    let agid = 99 * AID_USER_OFFSET + 10001;
+    let auid = 99 * users::AID_USER_OFFSET + 10001;
+    let agid = 99 * users::AID_USER_OFFSET + 10001;
 
     // Cleanup user directory if it exists
     let path_buf = PathBuf::from("/data/misc/keystore/user_99");
@@ -242,8 +242,8 @@ fn keystore2_encrypted_characteristics() -> anyhow::Result<()> {
 
     let use_key_fn = move || {
         println!("UID: {}", getuid());
-        println!("Android User ID: {}", rustutils::users::multiuser_get_user_id(9910001));
-        println!("Android app ID: {}", rustutils::users::multiuser_get_app_id(9910001));
+        println!("Android User ID: {}", users::multiuser_get_user_id(9910001));
+        println!("Android app ID: {}", users::multiuser_get_app_id(9910001));
 
         let test_alias = "authbound";
         let keystore2 = get_keystore_service();
@@ -488,8 +488,8 @@ fn keystore2_encrypted_certificates() -> anyhow::Result<()> {
 
     let use_key_fn = move || {
         println!("UID: {}", getuid());
-        println!("Android User ID: {}", rustutils::users::multiuser_get_user_id(9810001));
-        println!("Android app ID: {}", rustutils::users::multiuser_get_app_id(9810001));
+        println!("Android User ID: {}", users::multiuser_get_user_id(9810001));
+        println!("Android app ID: {}", users::multiuser_get_app_id(9810001));
 
         let test_alias = "authboundcertenc";
         let keystore2 = get_keystore_service();

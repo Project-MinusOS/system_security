@@ -80,7 +80,7 @@ fn setup() -> Result<(ConditionerBuilder, UnixListener)> {
 
     let listener = match cli.socket {
         Some(path) => get_socket(path.as_path())?,
-        None => rustutils::sockets::android_get_control_socket("prng_seeder")
+        None => rustutils::android::sockets::android_get_control_socket("prng_seeder")
             .context("In setup, calling android_get_control_socket")?
             .into(),
     };

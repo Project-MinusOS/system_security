@@ -79,7 +79,7 @@ pub struct AppUid(pub i64);
 impl AppUid {
     /// Return the user/human profile user ID corresponding to this uid.
     pub fn owning_user(&self) -> AndroidUserId {
-        AndroidUserId(rustutils::users::multiuser_get_user_id(self.0 as u32) as i32)
+        AndroidUserId(rustutils::android::users::multiuser_get_user_id(self.0 as u32) as i32)
     }
 
     /// Get the calling uid for the current thread.
@@ -89,7 +89,7 @@ impl AppUid {
 }
 
 /// Uid for the system.
-pub const AID_SYSTEM: AppUid = AppUid(rustutils::users::AID_SYSTEM as i64);
+pub const AID_SYSTEM: AppUid = AppUid(rustutils::android::users::AID_SYSTEM as i64);
 
 /// A secure user ID ("sid") corresponding to an `AndroidUserId` that has been registered with a
 /// secure authenticator instance.
@@ -539,11 +539,11 @@ pub fn ui_opts_2_compat(opt: i32) -> ApcCompatUiOptions {
 }
 
 /// AID offset for uid space partitioning.
-pub const AID_USER_OFFSET: u32 = rustutils::users::AID_USER_OFFSET;
+pub const AID_USER_OFFSET: u32 = rustutils::android::users::AID_USER_OFFSET;
 
 /// AID of the keystore process itself, used for keys that
 /// keystore generates for its own use.
-pub const AID_KEYSTORE: AppUid = AppUid(rustutils::users::AID_KEYSTORE as i64);
+pub const AID_KEYSTORE: AppUid = AppUid(rustutils::android::users::AID_KEYSTORE as i64);
 
 /// Merges and filters two lists of key descriptors. The first input list, legacy_descriptors,
 /// is assumed to not be sorted or filtered. As such, all key descriptors in that list whose

@@ -29,7 +29,7 @@ use keystore2_test_utils::{
     run_as, SecLevel,
 };
 use nix::unistd::getuid;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 static USER_MANAGER_SERVICE_NAME: &str = "android.security.maintenance";
 

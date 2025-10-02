@@ -27,7 +27,7 @@ use keystore2_test_utils::{
     authorizations, key_generations, key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::{getuid, Gid, Uid};
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,

@@ -28,7 +28,7 @@ use keystore2_test_utils::{
     authorizations, get_keystore_service, key_generations, key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::{getuid, Gid, Uid};
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 macro_rules! test_ec_sign_key_op_success {
     ( $test_name:ident, $digest:expr, $ec_curve:expr ) => {

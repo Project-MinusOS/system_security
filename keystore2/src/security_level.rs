@@ -67,7 +67,7 @@ use anyhow::{anyhow, Context, Result};
 use log::error;
 use postprocessor_client::process_certificate_chain;
 use rkpd_client::store_rkpd_attestation_key;
-use rustutils::system_properties::read_bool;
+use rustutils::android::system_properties::read_bool;
 use std::convert::TryInto;
 use std::time::SystemTime;
 
