@@ -35,7 +35,7 @@ use keystore2_test_utils::{
     authorizations::AuthSetBuilder, get_keystore_service, key_generations::Error, run_as, SecLevel,
 };
 use openssl::x509::X509;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 extern "C" {
     // In ffi_engine.{cpp,hpp}

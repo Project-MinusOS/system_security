@@ -21,7 +21,7 @@ use keystore2_test_utils::{
     get_keystore_service, key_generations, key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::getuid;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 use std::collections::HashSet;
 use std::fmt::Write;
 

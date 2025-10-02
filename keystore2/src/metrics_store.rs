@@ -657,9 +657,10 @@ pub fn update_keystore_crash_sysprop() {
         }
     };
 
-    if let Err(e) =
-        rustutils::system_properties::write(KEYSTORE_CRASH_COUNT_PROPERTY, &new_count.to_string())
-    {
+    if let Err(e) = rustutils::android::system_properties::write(
+        KEYSTORE_CRASH_COUNT_PROPERTY,
+        &new_count.to_string(),
+    ) {
         error!(
             concat!(
                 "In update_keystore_crash_sysprop:: ",
@@ -672,7 +673,7 @@ pub fn update_keystore_crash_sysprop() {
 
 /// Read the system property: keystore.crash_count.
 pub fn read_keystore_crash_count() -> Result<Option<i32>> {
-    match rustutils::system_properties::read("keystore.crash_count") {
+    match rustutils::android::system_properties::read("keystore.crash_count") {
         Ok(Some(count)) => count.parse::<i32>().map(Some).map_err(std::convert::Into::into),
         Ok(None) => Ok(None),
         Err(e) => Err(e).context(ks_err!("Failed to read crash count property.")),

@@ -171,7 +171,7 @@ impl DB {
         self.with_transaction(TransactionBehavior::Immediate, |tx| {
             tx.execute(
                 "DELETE FROM profiles WHERE cast ( ( owner/? ) as int) = ?;",
-                params![rustutils::users::AID_USER_OFFSET, user_id.0],
+                params![rustutils::android::users::AID_USER_OFFSET, user_id.0],
             )
             .context("In remove_uid: Failed to delete.")
         })?;
@@ -668,23 +668,31 @@ mod db_test {
             .expect("Failed to open database.");
 
         // Insert three entries for owner 2.
-        db.put(AppUid(2 + 2 * rustutils::users::AID_USER_OFFSET as i64), "test1", TEST_BLOB1)
-            .expect("Failed to insert test1.");
-        db.put(AppUid(4 + 2 * rustutils::users::AID_USER_OFFSET as i64), "test2", TEST_BLOB2)
-            .expect("Failed to insert test2.");
+        db.put(
+            AppUid(2 + 2 * rustutils::android::users::AID_USER_OFFSET as i64),
+            "test1",
+            TEST_BLOB1,
+        )
+        .expect("Failed to insert test1.");
+        db.put(
+            AppUid(4 + 2 * rustutils::android::users::AID_USER_OFFSET as i64),
+            "test2",
+            TEST_BLOB2,
+        )
+        .expect("Failed to insert test2.");
         db.put(AppUid(3), "test3", TEST_BLOB3).expect("Failed to insert test3.");
 
         db.remove_user(AndroidUserId(2)).expect("Failed to remove user 2");
 
         assert_eq!(
             Vec::<String>::new(),
-            db.list(AppUid(2 + 2 * rustutils::users::AID_USER_OFFSET as i64))
+            db.list(AppUid(2 + 2 * rustutils::android::users::AID_USER_OFFSET as i64))
                 .expect("Failed to list entries.")
         );
 
         assert_eq!(
             Vec::<String>::new(),
-            db.list(AppUid(4 + 2 * rustutils::users::AID_USER_OFFSET as i64))
+            db.list(AppUid(4 + 2 * rustutils::android::users::AID_USER_OFFSET as i64))
                 .expect("Failed to list entries.")
         );
 

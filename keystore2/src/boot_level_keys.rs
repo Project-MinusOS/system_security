@@ -53,7 +53,7 @@ enum DenyLaterStrategy {
 const PROPERTY_NAME: &str = "ro.keystore.boot_level_key.strategy";
 
 fn lookup_level_zero_km_and_strategy() -> Result<Option<(SecurityLevel, DenyLaterStrategy)>> {
-    let property_val = rustutils::system_properties::read(PROPERTY_NAME)
+    let property_val = rustutils::android::system_properties::read(PROPERTY_NAME)
         .with_context(|| ks_err!("property read failed: {}", PROPERTY_NAME))?;
     // TODO: use feature(let_else) when that's stabilized.
     let property_val = if let Some(p) = property_val {

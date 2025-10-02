@@ -539,7 +539,7 @@ pub fn verify_aliases(
 // Get the value of the given system property, if the given system property doesn't exist
 // then returns an empty byte vector.
 pub fn get_system_prop(name: &str) -> Vec<u8> {
-    match rustutils::system_properties::read(name) {
+    match rustutils::android::system_properties::read(name) {
         Ok(Some(value)) => value.as_bytes().to_vec(),
         _ => {
             vec![]
