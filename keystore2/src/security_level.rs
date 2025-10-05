@@ -33,9 +33,9 @@ use crate::remote_provisioning::RemProvState;
 use crate::super_key::{KeyBlob, SuperKeyManager};
 use crate::utils::{
     check_device_attestation_permissions, check_key_permission,
-    check_unique_id_attestation_permissions, is_device_id_attestation_tag,
-    key_characteristics_to_internal, log_security_safe_params, watchdog as wd, AndroidUserId,
-    AppUid, Challenge, UNDEFINED_NOT_AFTER,
+    check_unique_id_attestation_permissions, count_key_entries, is_device_id_attestation_tag,
+    key_characteristics_to_internal, log_security_safe_params, target_sdk_for_uid, watchdog as wd,
+    AndroidUserId, AppUid, Challenge, UNDEFINED_NOT_AFTER,
 };
 use crate::{
     database::{
@@ -70,6 +70,12 @@ use rkpd_client::store_rkpd_attestation_key;
 use rustutils::android::system_properties::read_bool;
 use std::convert::TryInto;
 use std::time::SystemTime;
+
+/// The fallback limit on the number of keys per app.  All apps must stay within this limit.
+const DEFAULT_PER_UID_KEY_LIMIT: i32 = 200_000;
+
+/// The limit on the number of keys per app for apps with a target SDK level of 37+.
+const API_37_PER_UID_KEY_LIMIT: i32 = 50_000;
 
 /// Implementation of the IKeystoreSecurityLevel Interface.
 pub struct KeystoreSecurityLevel {
@@ -526,6 +532,58 @@ impl KeystoreSecurityLevel {
         Ok(result)
     }
 
+    /// Check whether new key generation should be failed due to excessive per-uid key counts.
+    fn check_key_counts(&self, key: &KeyDescriptor) -> Result<()> {
+        if !keystore2_flags::limit_keys_per_uid() {
+            return Ok(());
+        }
+        if key.domain != Domain::APP {
+            // Only limit app keys.
+            return Ok(());
+        }
+        let uid = AppUid(key.nspace);
+
+        // See how many keys this uid already owns.
+        let Ok(count) =
+            DB.with(|db| count_key_entries(&mut db.borrow_mut(), key.domain, key.nspace))
+        else {
+            // Fail open if we can't count the keys for some reason.
+            error!("failed to count keys for {uid:?}");
+            return Ok(());
+        };
+
+        // The per-uid limits for keys are based on the app's target SDK.
+        // Determining the target SDK involve PackageManager round trips, so only
+        // check target SDK if necessary.
+        let too_many_keys = if count < API_37_PER_UID_KEY_LIMIT {
+            // Below the lower limit => definitely OK.
+            false
+        } else if count >= DEFAULT_PER_UID_KEY_LIMIT {
+            // Above the higher limit => definitely not OK.
+            true
+        } else {
+            // In between => check target SDK to determine limit.
+            match target_sdk_for_uid(uid) {
+                Some(target_sdk) if target_sdk >= 37 => {
+                    // Later target SDK has a lower limit.
+                    true
+                }
+                _ => {
+                    // Otherwise the higher limit applies.
+                    false
+                }
+            }
+        };
+
+        if too_many_keys {
+            error!("failing key creation for {uid:?} with excessive ({count}) keys",);
+            return Err(error::Error::Rc(ResponseCode::TOO_MANY_APP_KEYS)).context(ks_err!(
+                "failed key creation as {uid:?} has too many ({count}) existing keys",
+            ));
+        }
+        Ok(())
+    }
+
     fn generate_key(
         &self,
         key: &KeyDescriptor,
@@ -549,6 +607,7 @@ impl KeystoreSecurityLevel {
             },
             _ => key.clone(),
         };
+        self.check_key_counts(&key)?;
 
         // generate_key requires the rebind permission.
         // Must return on error for security reasons.
@@ -706,6 +765,7 @@ impl KeystoreSecurityLevel {
             },
             _ => key.clone(),
         };
+        self.check_key_counts(&key)?;
 
         // import_key requires the rebind permission.
         check_key_permission(KeyPerm::Rebind, &key, &None).context(ks_err!("In import_key."))?;
@@ -785,6 +845,7 @@ impl KeystoreSecurityLevel {
             },
             _ => panic!("Unreachable."),
         };
+        self.check_key_counts(&key)?;
 
         // Import_wrapped_key requires the rebind permission for the new key.
         check_key_permission(KeyPerm::Rebind, &key, &None).context(ks_err!())?;
