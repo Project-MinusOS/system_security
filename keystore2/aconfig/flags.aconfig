@@ -62,3 +62,11 @@ flag {
   }
   is_fixed_read_only: true
 }
+
+flag {
+  name: "limit_keys_per_uid"
+  namespace: "hardware_backed_security"
+  description: "Apply limits of #keys per-uid"
+  bug: "395078130"
+  is_fixed_read_only: true
+}

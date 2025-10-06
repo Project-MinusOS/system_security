@@ -669,7 +669,7 @@ pub fn count_key_entries(db: &mut KeystoreDB, domain: Domain, namespace: i64) ->
 pub fn log_security_safe_params(params: &[KmKeyParameter]) -> Vec<KmKeyParameter> {
     params
         .iter()
-        .filter(|kp| (kp.tag != Tag::APPLICATION_ID && kp.tag != Tag::APPLICATION_DATA))
+        .filter(|kp| kp.tag != Tag::APPLICATION_ID && kp.tag != Tag::APPLICATION_DATA)
         .cloned()
         .collect::<Vec<KmKeyParameter>>()
 }
