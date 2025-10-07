@@ -23,7 +23,7 @@ use crate::{
     boot_level_keys::BootLevel,
     database::{AuthTokenEntry, BootTime},
     globals::SUPER_KEY,
-    utils::{Challenge, SecureUserId},
+    utils::{AndroidUserId, SecureUserId, Challenge},
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, ErrorCode::ErrorCode as Ec, HardwareAuthToken::HardwareAuthToken,
@@ -309,11 +309,11 @@ impl AuthInfo {
         Ok(())
     }
 
-    /// This function returns the auth tokens as needed by the ongoing operation or fails
-    /// with ErrorCode::KEY_USER_NOT_AUTHENTICATED. If this was called for the first time
-    /// after a deferred authorization was requested by finalize_create_authorization, this
-    /// function may block on the generation of a time stamp token. It then moves the
-    /// tokens into the DeferredAuthState::Token state for future use.
+    /// This function returns the auth tokens as needed by the ongoing operation or fails with
+    /// [`ErrorCode::KEY_USER_NOT_AUTHENTICATED`]. If this was called for the first time after a
+    /// deferred authorization was requested by `finalize_create_authorization`, this function may
+    /// block on the generation of a time stamp token. It then moves the tokens into the
+    /// [`DeferredAuthState::Token`] state for future use.
     fn get_auth_tokens(&mut self) -> Result<(Option<HardwareAuthToken>, Option<TimeStampToken>)> {
         let deferred_tokens = if let DeferredAuthState::Waiting(ref auth_request) = self.state {
             Some(auth_request.get_auth_tokens().context("In AuthInfo::get_auth_tokens.")?)
@@ -347,12 +347,12 @@ impl AuthInfo {
 pub struct Enforcements {
     /// This hash set contains the user ids for whom the device is currently unlocked. If a user id
     /// is not in the set, it implies that the device is locked for the user.
-    device_unlocked_set: Mutex<HashSet<i32>>,
-    /// This field maps outstanding auth challenges to their operations. When an auth token
-    /// with the right challenge is received it is passed to the map using
-    /// TokenReceiverMap::add_auth_token() which removes the entry from the map. If an entry goes
-    /// stale, because the operation gets dropped before an auth token is received, the map
-    /// is cleaned up in regular intervals.
+    device_unlocked_set: Mutex<HashSet<AndroidUserId>>,
+    /// This field maps outstanding auth challenges to their operations. When an auth token with the
+    /// right challenge is received it is passed to the map using
+    /// [`TokenReceiverMap::add_auth_token()`] which removes the entry from the map. If an entry
+    /// goes stale, because the operation gets dropped before an auth token is received, the map is
+    /// cleaned up in regular intervals.
     op_auth_map: TokenReceiverMap,
     /// The enforcement module will try to get a confirmation token from this channel whenever
     /// an operation that requires confirmation finishes.
@@ -376,8 +376,8 @@ impl Enforcements {
     /// auth tokens and timestamp tokens as required by the operation.
     /// With regard to auth tokens, the following steps are taken:
     ///
-    /// If no key parameters are given (typically when the client is self managed
-    /// (see Domain.Blob)) nothing is enforced.
+    /// If no key parameters are given (typically when the client is self managed,
+    /// see [`Domain::BLOB`]) nothing is enforced.
     /// If the key is time-bound, find a matching auth token from the database.
     /// If the above step is successful, and if requires_timestamp is given, the returned
     /// AuthInfo will provide a Timestamp token as appropriate.
@@ -450,7 +450,7 @@ impl Enforcements {
         let mut user_auth_type: Option<HardwareAuthenticatorType> = None;
         let mut no_auth_required: bool = false;
         let mut caller_nonce_allowed = false;
-        let mut user_id: i32 = -1;
+        let mut user = AndroidUserId(-1);
         let mut user_sids = Vec::<SecureUserId>::new();
         let mut key_time_out: Option<i64> = None;
         let mut unlocked_device_required = false;
@@ -504,7 +504,7 @@ impl Enforcements {
                     user_sids.push(SecureUserId(*s));
                 }
                 KeyParameterValue::UserID(u) => {
-                    user_id = *u;
+                    user = AndroidUserId(*u);
                 }
                 KeyParameterValue::UnlockedDeviceRequired => {
                     unlocked_device_required = true;
@@ -547,7 +547,7 @@ impl Enforcements {
             || (user_auth_type.is_none() && !user_sids.is_empty())
         {
             return Err(Error::Km(Ec::KEY_USER_NOT_AUTHENTICATED)).context(ks_err!(
-                "Auth required, but auth type {user_auth_type:?} + {user_sids:?} inconsistently specified"
+                "Auth required, but auth type {user_auth_type:?} + {user_sids:?} inconsistently specified",
             ));
         }
 
@@ -563,7 +563,7 @@ impl Enforcements {
         if unlocked_device_required {
             // check the device locked status. If locked, operations on the key are not
             // allowed.
-            if self.is_device_locked(user_id) {
+            if self.is_device_locked(user) {
                 return Err(Error::Km(Ec::DEVICE_LOCKED)).context(ks_err!("device is locked."));
             }
         }
@@ -630,8 +630,8 @@ impl Enforcements {
         DB.with(|db| db.borrow().find_auth_token_entry(p))
     }
 
-    /// Checks if the time now since epoch is greater than (or equal, if is_given_time_inclusive is
-    /// set) the given time (in milliseconds)
+    /// Checks if the time now since epoch is greater than (or equal, if `is_given_time_inclusive`
+    /// is set) the given time (in milliseconds)
     fn is_given_time_passed(given_time: i64, is_given_time_inclusive: bool) -> bool {
         let duration_since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
 
@@ -649,18 +649,18 @@ impl Enforcements {
 
     /// Check if the device is locked for the given user. If there's no entry yet for the user,
     /// we assume that the device is locked
-    fn is_device_locked(&self, user_id: i32) -> bool {
+    fn is_device_locked(&self, user: AndroidUserId) -> bool {
         let set = self.device_unlocked_set.lock().unwrap();
-        !set.contains(&user_id)
+        !set.contains(&user)
     }
 
     /// Sets the device locked status for the user. This method is called externally.
-    pub fn set_device_locked(&self, user_id: i32, device_locked_status: bool) {
+    pub fn set_device_locked(&self, user: AndroidUserId, device_locked_status: bool) {
         let mut set = self.device_unlocked_set.lock().unwrap();
         if device_locked_status {
-            set.remove(&user_id);
+            set.remove(&user);
         } else {
-            set.insert(user_id);
+            set.insert(user);
         }
     }
 

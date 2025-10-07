@@ -54,7 +54,8 @@ use crate::key_parameter::{KeyParameter, KeyParameterValue, Tag};
 use crate::ks_err;
 use crate::permission::KeyPermSet;
 use crate::utils::{
-    get_current_time_in_milliseconds, watchdog as wd, Challenge, SecureUserId, AID_USER_OFFSET,
+    get_current_time_in_milliseconds, watchdog as wd, AndroidUserId, AppUid, Challenge,
+    SecureUserId, AID_USER_OFFSET,
 };
 use crate::{
     error::{Error as KsError, ErrorCode, ResponseCode},
@@ -290,6 +291,9 @@ pub enum KeyType {
     /// This is a super key type. These keys are created by keystore itself and used to encrypt
     /// other key blobs to provide LSKF binding.
     Super,
+    // A previous version also had `Attestation` as value 2 (removed in
+    // https://r.android.com/2587525).  Avoid re-using that value just in case there are any
+    // left-over rows from old devices that have been updated.
 }
 
 impl ToSql for KeyType {
@@ -297,6 +301,7 @@ impl ToSql for KeyType {
         Ok(ToSqlOutput::Owned(Value::Integer(match self {
             KeyType::Client => 0,
             KeyType::Super => 1,
+            // Value 2 is reserved; was previously `KeyType::Attestation`
         })))
     }
 }
@@ -306,6 +311,7 @@ impl FromSql for KeyType {
         match i64::column_result(value)? {
             0 => Ok(KeyType::Client),
             1 => Ok(KeyType::Super),
+            // Value 2 is reserved; was previously `KeyType::Attestation`
             v => Err(FromSqlError::OutOfRange(v)),
         }
     }
@@ -1481,7 +1487,7 @@ impl KeystoreDB {
     /// Stores a super key in the database.
     pub fn store_super_key(
         &mut self,
-        user_id: u32,
+        user: AndroidUserId,
         key_type: &SuperKeyType,
         blob: &[u8],
         blob_metadata: &BlobMetaData,
@@ -1499,7 +1505,7 @@ impl KeystoreDB {
                         id,
                         KeyType::Super,
                         Domain::APP.0,
-                        user_id as i64,
+                        user.0 as i64,
                         key_type.alias,
                         KeyLifeCycle::Live,
                         &KEYSTORE_UUID,
@@ -1530,14 +1536,14 @@ impl KeystoreDB {
     pub fn load_super_key(
         &mut self,
         key_type: &SuperKeyType,
-        user_id: u32,
+        user: AndroidUserId,
     ) -> Result<Option<(KeyIdGuard, KeyEntry)>> {
         let _wp = wd::watch("KeystoreDB::load_super_key");
 
         self.with_transaction(Immediate("TX_load_super_key"), |tx| {
             let key_descriptor = KeyDescriptor {
                 domain: Domain::APP,
-                nspace: user_id as i64,
+                nspace: user.0 as i64,
                 alias: Some(key_type.alias.into()),
                 blob: None,
             };
@@ -1848,17 +1854,17 @@ impl KeystoreDB {
         &mut self,
         key_id_guard: KeyIdGuard,
         destination: &KeyDescriptor,
-        caller_uid: u32,
+        caller_uid: AppUid,
         check_permission: impl Fn(&KeyDescriptor) -> Result<()>,
     ) -> Result<()> {
         let _wp = wd::watch("KeystoreDB::migrate_key_namespace");
 
         let destination = match destination.domain {
-            Domain::APP => KeyDescriptor { nspace: caller_uid as i64, ..(*destination).clone() },
+            Domain::APP => KeyDescriptor { nspace: caller_uid.0, ..(*destination).clone() },
             Domain::SELINUX => (*destination).clone(),
             domain => {
                 return Err(KsError::Rc(ResponseCode::INVALID_ARGUMENT))
-                    .context(format!("Domain {:?} must be either APP or SELINUX.", domain));
+                    .context(format!("Domain {domain:?} must be either APP or SELINUX."));
             }
         };
 
@@ -1899,7 +1905,7 @@ impl KeystoreDB {
 
             if updated != 1 {
                 return Err(KsError::sys())
-                    .context(format!("Update succeeded, but {} rows were updated.", updated));
+                    .context(format!("Update succeeded, but {updated} rows were updated."));
             }
             Ok(()).no_gc()
         })
@@ -2075,13 +2081,13 @@ impl KeystoreDB {
     /// to perform access control. The strategy depends on the `domain` field in the
     /// key descriptor.
     /// * Domain::SELINUX: The access tuple is complete and this function only loads
-    ///       the key_id for further processing.
+    ///   the key_id for further processing.
     /// * Domain::APP: Like Domain::SELINUX, but the tuple is completed by `caller_uid`
-    ///       which serves as the namespace.
+    ///   which serves as the namespace.
     /// * Domain::GRANT: The grant table is queried for the `key_id` and the
-    ///       `access_vector`.
+    ///   `access_vector`.
     /// * Domain::KEY_ID: The keyentry table is queried for the owning `domain` and
-    ///       `namespace`.
+    ///   `namespace`.
     ///
     /// In each case the information returned is sufficient to perform the access
     /// check and the key id can be used to load further key artifacts.
@@ -2089,7 +2095,7 @@ impl KeystoreDB {
         tx: &Transaction,
         key: &KeyDescriptor,
         key_type: KeyType,
-        caller_uid: u32,
+        caller_uid: AppUid,
     ) -> Result<KeyAccessInfo> {
         match key.domain {
             // Domain App or SELinux. In this case we load the key_id from
@@ -2101,7 +2107,7 @@ impl KeystoreDB {
             Domain::APP | Domain::SELINUX => {
                 let mut access_key = key.clone();
                 if access_key.domain == Domain::APP {
-                    access_key.nspace = caller_uid as i64;
+                    access_key.nspace = caller_uid.0;
                 }
                 let key_id = Self::load_key_entry_id(tx, &access_key, key_type)
                     .with_context(|| format!("With key.domain = {:?}.", access_key.domain))?;
@@ -2120,7 +2126,7 @@ impl KeystoreDB {
                     )
                     .context("Domain::GRANT prepare statement failed")?;
                 let mut rows = stmt
-                    .query(params![caller_uid as i64, key.nspace, KeyLifeCycle::Live])
+                    .query(params![caller_uid.0, key.nspace, KeyLifeCycle::Live])
                     .context("Domain:Grant: query failed.")?;
                 let (key_id, access_vector): (i64, i32) =
                     db_utils::with_rows_extract_one(&mut rows, |row| {
@@ -2172,12 +2178,12 @@ impl KeystoreDB {
                 // of Domain::SELINUX we have to speculatively check for grants because we have to
                 // consult the SEPolicy before we know if the caller is the owner.
                 let access_vector: Option<KeyPermSet> =
-                    if domain != Domain::APP || namespace != caller_uid as i64 {
+                    if domain != Domain::APP || namespace != caller_uid.0 {
                         let access_vector: Option<i32> = tx
                             .query_row(
                                 "SELECT access_vector FROM persistent.grant
                                 WHERE grantee = ? AND keyentryid = ?;",
-                                params![caller_uid as i64, key.nspace],
+                                params![caller_uid.0, key.nspace],
                                 |row| row.get(0),
                             )
                             .optional()
@@ -2331,7 +2337,7 @@ impl KeystoreDB {
         key: &KeyDescriptor,
         key_type: KeyType,
         load_bits: KeyEntryLoadBits,
-        caller_uid: u32,
+        caller_uid: AppUid,
         check_permission: impl Fn(&KeyDescriptor, Option<KeyPermSet>) -> Result<()>,
     ) -> Result<(KeyIdGuard, KeyEntry)> {
         let _wp = wd::watch("KeystoreDB::load_key_entry");
@@ -2362,7 +2368,7 @@ impl KeystoreDB {
         key: &KeyDescriptor,
         key_type: KeyType,
         load_bits: KeyEntryLoadBits,
-        caller_uid: u32,
+        caller_uid: AppUid,
         check_permission: &impl Fn(&KeyDescriptor, Option<KeyPermSet>) -> Result<()>,
     ) -> Result<(KeyIdGuard, KeyEntry)> {
         // KEY ID LOCK 1/2
@@ -2467,15 +2473,14 @@ impl KeystoreDB {
         Ok(updated != 0)
     }
 
-    fn delete_received_grants(tx: &Transaction, user_id: u32) -> Result<bool> {
+    fn delete_received_grants(tx: &Transaction, user: AndroidUserId) -> Result<bool> {
         let updated = tx
             .execute(
                 &format!("DELETE FROM persistent.grant WHERE cast ( (grantee/{AID_USER_OFFSET}) as int) = ?;"),
-                params![user_id],
+                params![user.0],
             )
             .context(format!(
-                "Trying to delete grants received by user ID {:?} from other apps.",
-                user_id
+                "Trying to delete grants received by {user:?} from other apps.",
             ))?;
         Ok(updated != 0)
     }
@@ -2486,7 +2491,7 @@ impl KeystoreDB {
         &mut self,
         key: &KeyDescriptor,
         key_type: KeyType,
-        caller_uid: u32,
+        caller_uid: AppUid,
         check_permission: impl Fn(&KeyDescriptor, Option<KeyPermSet>) -> Result<()>,
     ) -> Result<()> {
         let _wp = wd::watch("KeystoreDB::unbind_key");
@@ -2633,13 +2638,12 @@ impl KeystoreDB {
     }
 
     /// Deletes all keys for the given user, including both client keys and super keys.
-    pub fn unbind_keys_for_user(&mut self, user_id: u32) -> Result<()> {
+    pub fn unbind_keys_for_user(&mut self, user: AndroidUserId) -> Result<()> {
         let _wp = wd::watch("KeystoreDB::unbind_keys_for_user");
 
         self.with_transaction(Immediate("TX_unbind_keys_for_user"), |tx| {
-            Self::delete_received_grants(tx, user_id).context(format!(
-                "In unbind_keys_for_user. Failed to delete received grants for user ID {:?}.",
-                user_id
+            Self::delete_received_grants(tx, user).context(format!(
+                "In unbind_keys_for_user. Failed to delete received grants for {user:?}",
             ))?;
 
             let mut stmt = tx
@@ -2648,14 +2652,13 @@ impl KeystoreDB {
                      WHERE (
                          key_type = ?
                          AND domain = ?
-                         AND cast ( (namespace/{aid_user_offset}) as int) = ?
+                         AND cast ( (namespace/{AID_USER_OFFSET}) as int) = ?
                          AND state = ?
                      ) OR (
                          key_type = ?
                          AND namespace = ?
                          AND state = ?
                      );",
-                    aid_user_offset = AID_USER_OFFSET
                 ))
                 .context(concat!(
                     "In unbind_keys_for_user. ",
@@ -2667,11 +2670,11 @@ impl KeystoreDB {
                     // WHERE client key:
                     KeyType::Client,
                     Domain::APP.0 as u32,
-                    user_id,
+                    user.0,
                     KeyLifeCycle::Live,
                     // OR super key:
                     KeyType::Super,
-                    user_id,
+                    user.0,
                     KeyLifeCycle::Live
                 ])
                 .context(ks_err!("Failed to query the keys created by apps."))?;
@@ -2704,7 +2707,7 @@ impl KeystoreDB {
     /// authentication is no longer possible.  In contrast, keys that just require that the device
     /// be unlocked should remain usable when the lock screen is set to Swipe or None, as the device
     /// is always considered "unlocked" in that case.
-    pub fn unbind_auth_bound_keys_for_user(&mut self, user_id: u32) -> Result<()> {
+    pub fn unbind_auth_bound_keys_for_user(&mut self, user: AndroidUserId) -> Result<()> {
         let _wp = wd::watch("KeystoreDB::unbind_auth_bound_keys_for_user");
 
         self.with_transaction(Immediate("TX_unbind_auth_bound_keys_for_user"), |tx| {
@@ -2713,9 +2716,8 @@ impl KeystoreDB {
                     "SELECT id from persistent.keyentry
                      WHERE key_type = ?
                      AND domain = ?
-                     AND cast ( (namespace/{aid_user_offset}) as int) = ?
+                     AND cast ( (namespace/{AID_USER_OFFSET}) as int) = ?
                      AND state = ?;",
-                    aid_user_offset = AID_USER_OFFSET
                 ))
                 .context(concat!(
                     "In unbind_auth_bound_keys_for_user. ",
@@ -2723,7 +2725,7 @@ impl KeystoreDB {
                 ))?;
 
             let mut rows = stmt
-                .query(params![KeyType::Client, Domain::APP.0 as u32, user_id, KeyLifeCycle::Live,])
+                .query(params![KeyType::Client, Domain::APP.0 as u32, user.0, KeyLifeCycle::Live,])
                 .context(ks_err!("Failed to query the keys created by apps."))?;
 
             let mut key_ids: Vec<i64> = Vec::new();
@@ -2753,7 +2755,7 @@ impl KeystoreDB {
                     num_unbound += 1;
                 }
             }
-            info!("Deleting {num_unbound} auth-bound keys for user {user_id}");
+            info!("Deleting {num_unbound} auth-bound keys for {user:?}");
             Ok(()).do_gc(notify_gc)
         })
         .context(ks_err!())
@@ -2886,8 +2888,8 @@ impl KeystoreDB {
     pub fn grant(
         &mut self,
         key: &KeyDescriptor,
-        caller_uid: u32,
-        grantee_uid: u32,
+        caller_uid: AppUid,
+        grantee_uid: AppUid,
         access_vector: KeyPermSet,
         check_permission: impl Fn(&KeyDescriptor, &KeyPermSet) -> Result<()>,
     ) -> Result<KeyDescriptor> {
@@ -2918,7 +2920,7 @@ impl KeystoreDB {
                 .query_row(
                     "SELECT id FROM persistent.grant
                 WHERE keyentryid = ? AND grantee = ?;",
-                    params![access.key_id, grantee_uid],
+                    params![access.key_id, grantee_uid.0],
                     |row| row.get(0),
                 )
                 .optional()
@@ -2937,7 +2939,7 @@ impl KeystoreDB {
                     tx.execute(
                         "INSERT INTO persistent.grant (id, grantee, keyentryid, access_vector)
                         VALUES (?, ?, ?, ?);",
-                        params![id, grantee_uid, access.key_id, i32::from(access_vector)],
+                        params![id, grantee_uid.0, access.key_id, i32::from(access_vector)],
                     )
                 })
                 .context(ks_err!())?
@@ -2953,8 +2955,8 @@ impl KeystoreDB {
     pub fn ungrant(
         &mut self,
         key: &KeyDescriptor,
-        caller_uid: u32,
-        grantee_uid: u32,
+        caller_uid: AppUid,
+        grantee_uid: AppUid,
         check_permission: impl Fn(&KeyDescriptor) -> Result<()>,
     ) -> Result<()> {
         let _wp = wd::watch("KeystoreDB::ungrant");
@@ -2972,7 +2974,7 @@ impl KeystoreDB {
             tx.execute(
                 "DELETE FROM persistent.grant
                 WHERE keyentryid = ? AND grantee = ?;",
-                params![access.key_id, grantee_uid],
+                params![access.key_id, grantee_uid.0],
             )
             .context("Failed to delete grant.")?;
 
@@ -3050,9 +3052,9 @@ impl KeystoreDB {
     /// the user changes biometrics enrollment or removes their LSKF.
     pub fn get_app_uids_affected_by_sid(
         &mut self,
-        user_id: i32,
+        user: AndroidUserId,
         sid: SecureUserId,
-    ) -> Result<Vec<i64>> {
+    ) -> Result<Vec<AppUid>> {
         let _wp = wd::watch("KeystoreDB::get_app_uids_affected_by_sid");
 
         let ids = self.with_transaction(Immediate("TX_get_app_uids_affected_by_sid"), |tx| {
@@ -3070,20 +3072,20 @@ impl KeystoreDB {
                 ))?;
 
             let mut rows = stmt
-                .query(params![KeyType::Client, Domain::APP.0 as u32, user_id, KeyLifeCycle::Live,])
+                .query(params![KeyType::Client, Domain::APP.0 as u32, user.0, KeyLifeCycle::Live,])
                 .context(ks_err!("Failed to query the keys created by apps."))?;
 
-            let mut key_ids_and_app_uids: HashMap<i64, i64> = Default::default();
+            let mut key_ids_and_app_uids: HashMap<i64, AppUid> = Default::default();
             db_utils::with_rows_extract_all(&mut rows, |row| {
                 key_ids_and_app_uids.insert(
                     row.get(0).context("Failed to read key id of a key created by an app.")?,
-                    row.get(1).context("Failed to read the app uid")?,
+                    AppUid(row.get(1).context("Failed to read the app uid")?),
                 );
                 Ok(())
             })?;
             Ok(key_ids_and_app_uids).no_gc()
         })?;
-        let mut app_uids_affected_by_sid: HashSet<i64> = Default::default();
+        let mut app_uids_affected_by_sid: HashSet<AppUid> = Default::default();
         for (key_id, app_uid) in ids {
             // Read the key parameters for each key in its own transaction. It is OK to ignore
             // an error to get the properties of a particular key since it might have been deleted
@@ -3109,7 +3111,7 @@ impl KeystoreDB {
             }
         }
 
-        let app_uids_vec: Vec<i64> = app_uids_affected_by_sid.into_iter().collect();
+        let app_uids_vec: Vec<AppUid> = app_uids_affected_by_sid.into_iter().collect();
         Ok(app_uids_vec)
     }
 

@@ -34,8 +34,8 @@ use crate::super_key::{KeyBlob, SuperKeyManager};
 use crate::utils::{
     check_device_attestation_permissions, check_key_permission,
     check_unique_id_attestation_permissions, is_device_id_attestation_tag,
-    key_characteristics_to_internal, log_security_safe_params, uid_to_android_user, watchdog as wd,
-    Challenge, UNDEFINED_NOT_AFTER,
+    key_characteristics_to_internal, log_security_safe_params, watchdog as wd, AndroidUserId,
+    AppUid, Challenge, UNDEFINED_NOT_AFTER,
 };
 use crate::{
     database::{
@@ -125,7 +125,7 @@ impl KeystoreSecurityLevel {
         &self,
         key: KeyDescriptor,
         creation_result: KeyCreationResult,
-        user_id: u32,
+        user: AndroidUserId,
         flags: Option<i32>,
     ) -> Result<KeyMetadata> {
         let KeyCreationResult {
@@ -163,10 +163,8 @@ impl KeystoreSecurityLevel {
 
         let mut key_parameters = key_characteristics_to_internal(key_characteristics);
 
-        key_parameters.push(KsKeyParam::new(
-            KsKeyParamValue::UserID(user_id as i32),
-            SecurityLevel::SOFTWARE,
-        ));
+        key_parameters
+            .push(KsKeyParam::new(KsKeyParamValue::UserID(user.0), SecurityLevel::SOFTWARE));
 
         let creation_date = DateTime::now().context(ks_err!("Trying to make creation time."))?;
 
@@ -189,7 +187,7 @@ impl KeystoreSecurityLevel {
                             &(key.domain),
                             &key_parameters,
                             flags,
-                            user_id,
+                            user,
                             &key_blob,
                         )
                         .context(ks_err!("Failed to handle super encryption."))?;
@@ -234,7 +232,7 @@ impl KeystoreSecurityLevel {
         operation_parameters: &[KeyParameter],
         forced: bool,
     ) -> Result<CreateOperationResponse> {
-        let caller_uid = ThreadState::get_calling_uid();
+        let caller_uid = AppUid::calling();
         // We use `scoping_blob` to extend the life cycle of the blob loaded from the database,
         // so that we can use it by reference like the blob provided by the key descriptor.
         // Otherwise, we would have to clone the blob from the key descriptor.
@@ -266,7 +264,7 @@ impl KeystoreSecurityLevel {
                 let super_key = SUPER_KEY
                     .read()
                     .unwrap()
-                    .get_credential_encrypted_key_by_user_id(uid_to_android_user(caller_uid));
+                    .get_credential_encrypted_key_by_user_id(caller_uid.owning_user());
                 let (key_id_guard, mut key_entry) = DB
                     .with::<_, Result<(KeyIdGuard, KeyEntry)>>(|db| {
                         LEGACY_IMPORTER.with_try_import(key, caller_uid, super_key, || {
@@ -417,7 +415,7 @@ impl KeystoreSecurityLevel {
 
     fn add_required_parameters(
         &self,
-        uid: u32,
+        uid: AppUid,
         params: &[KeyParameter],
         key: &KeyDescriptor,
     ) -> Result<Vec<KeyParameter>> {
@@ -460,7 +458,7 @@ impl KeystoreSecurityLevel {
         if params.iter().any(|kp| kp.tag == Tag::ATTESTATION_CHALLENGE) {
             let _wp =
                 self.watch(" KeystoreSecurityLevel::add_required_parameters: calling get_aaid");
-            match keystore2_aaid::get_aaid(uid) {
+            match keystore2_aaid::get_aaid(uid.0 as u32) {
                 Ok(aaid_ok) => {
                     result.push(KeyParameter {
                         tag: Tag::ATTESTATION_APPLICATION_ID,
@@ -540,12 +538,12 @@ impl KeystoreSecurityLevel {
             return Err(error::Error::Km(ErrorCode::INVALID_ARGUMENT))
                 .context(ks_err!("Alias must be specified"));
         }
-        let caller_uid = ThreadState::get_calling_uid();
+        let caller_uid = AppUid::calling();
 
         let key = match key.domain {
             Domain::APP => KeyDescriptor {
                 domain: key.domain,
-                nspace: caller_uid as i64,
+                nspace: caller_uid.0,
                 alias: key.alias.clone(),
                 blob: None,
             },
@@ -681,8 +679,8 @@ impl KeystoreSecurityLevel {
         }
         .context(ks_err!())?;
 
-        let user_id = uid_to_android_user(caller_uid);
-        self.store_new_key(key, creation_result, user_id, Some(flags)).context(ks_err!())
+        let user = caller_uid.owning_user();
+        self.store_new_key(key, creation_result, user, Some(flags)).context(ks_err!())
     }
 
     fn import_key(
@@ -697,12 +695,12 @@ impl KeystoreSecurityLevel {
             return Err(error::Error::Km(ErrorCode::INVALID_ARGUMENT))
                 .context(ks_err!("Alias must be specified"));
         }
-        let caller_uid = ThreadState::get_calling_uid();
+        let caller_uid = AppUid::calling();
 
         let key = match key.domain {
             Domain::APP => KeyDescriptor {
                 domain: key.domain,
-                nspace: caller_uid as i64,
+                nspace: caller_uid.0,
                 alias: key.alias.clone(),
                 blob: None,
             },
@@ -740,8 +738,8 @@ impl KeystoreSecurityLevel {
         })
         .context(ks_err!("Trying to call importKey"))?;
 
-        let user_id = uid_to_android_user(caller_uid);
-        self.store_new_key(key, creation_result, user_id, Some(flags)).context(ks_err!())
+        let user = caller_uid.owning_user();
+        self.store_new_key(key, creation_result, user, Some(flags)).context(ks_err!())
     }
 
     fn import_wrapped_key(
@@ -770,13 +768,12 @@ impl KeystoreSecurityLevel {
                 .context(ks_err!("Import wrapped key not supported for self managed blobs."));
         }
 
-        let caller_uid = ThreadState::get_calling_uid();
-        let user_id = uid_to_android_user(caller_uid);
+        let caller_uid = AppUid::calling();
 
         let key = match key.domain {
             Domain::APP => KeyDescriptor {
                 domain: key.domain,
-                nspace: caller_uid as i64,
+                nspace: caller_uid.0,
                 alias: key.alias.clone(),
                 blob: None,
             },
@@ -792,7 +789,8 @@ impl KeystoreSecurityLevel {
         // Import_wrapped_key requires the rebind permission for the new key.
         check_key_permission(KeyPerm::Rebind, &key, &None).context(ks_err!())?;
 
-        let super_key = SUPER_KEY.read().unwrap().get_credential_encrypted_key_by_user_id(user_id);
+        let user = caller_uid.owning_user();
+        let super_key = SUPER_KEY.read().unwrap().get_credential_encrypted_key_by_user_id(user);
 
         let (wrapping_key_id_guard, mut wrapping_key_entry) = DB
             .with(|db| {
@@ -864,8 +862,8 @@ impl KeystoreSecurityLevel {
             )
             .context(ks_err!())?;
 
-        self.store_new_key(key, creation_result, user_id, None)
-            .context(ks_err!("Trying to store the new key."))
+        self.store_new_key(key, creation_result, user, None)
+            .context(ks_err!("Trying to store the new key for {user:?}"))
     }
 
     fn store_upgraded_keyblob(

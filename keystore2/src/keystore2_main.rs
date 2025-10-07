@@ -106,26 +106,26 @@ fn main() {
     binder::ProcessState::start_thread_pool();
 
     let ks_service = KeystoreService::new_native_binder(id_rotation_state).unwrap_or_else(|e| {
-        panic!("Failed to create service {} because of {:?}.", KS2_SERVICE_NAME, e);
+        panic!("Failed to create service {KS2_SERVICE_NAME} because of {e:?}.");
     });
     binder::add_service(KS2_SERVICE_NAME, ks_service.as_binder()).unwrap_or_else(|e| {
-        panic!("Failed to register service {} because of {:?}.", KS2_SERVICE_NAME, e);
+        panic!("Failed to register service {KS2_SERVICE_NAME} because of {e:?}.");
     });
 
     let apc_service =
         ApcManager::new_native_binder(confirmation_token_sender).unwrap_or_else(|e| {
-            panic!("Failed to create service {} because of {:?}.", APC_SERVICE_NAME, e);
+            panic!("Failed to create service {APC_SERVICE_NAME} because of {e:?}.");
         });
     binder::add_service(APC_SERVICE_NAME, apc_service.as_binder()).unwrap_or_else(|e| {
-        panic!("Failed to register service {} because of {:?}.", APC_SERVICE_NAME, e);
+        panic!("Failed to register service {APC_SERVICE_NAME} because of {e:?}.");
     });
 
     let authorization_service = AuthorizationManager::new_native_binder().unwrap_or_else(|e| {
-        panic!("Failed to create service {} because of {:?}.", AUTHORIZATION_SERVICE_NAME, e);
+        panic!("Failed to create service {AUTHORIZATION_SERVICE_NAME} because of {e:?}.");
     });
     binder::add_service(AUTHORIZATION_SERVICE_NAME, authorization_service.as_binder())
         .unwrap_or_else(|e| {
-            panic!("Failed to register service {} because of {:?}.", AUTHORIZATION_SERVICE_NAME, e);
+            panic!("Failed to register service {AUTHORIZATION_SERVICE_NAME} because of {e:?}.");
         });
 
     let (delete_listener, legacykeystore) = LegacyKeystore::new_native_binder(
@@ -133,27 +133,24 @@ fn main() {
     );
 
     let maintenance_service = Maintenance::new_native_binder(delete_listener).unwrap_or_else(|e| {
-        panic!("Failed to create service {} because of {:?}.", USER_MANAGER_SERVICE_NAME, e);
+        panic!("Failed to create service {USER_MANAGER_SERVICE_NAME} because of {e:?}.");
     });
     binder::add_service(USER_MANAGER_SERVICE_NAME, maintenance_service.as_binder()).unwrap_or_else(
         |e| {
-            panic!("Failed to register service {} because of {:?}.", USER_MANAGER_SERVICE_NAME, e);
+            panic!("Failed to register service {USER_MANAGER_SERVICE_NAME} because of {e:?}.");
         },
     );
 
     let metrics_service = Metrics::new_native_binder().unwrap_or_else(|e| {
-        panic!("Failed to create service {} because of {:?}.", METRICS_SERVICE_NAME, e);
+        panic!("Failed to create service {METRICS_SERVICE_NAME} because of {e:?}.");
     });
     binder::add_service(METRICS_SERVICE_NAME, metrics_service.as_binder()).unwrap_or_else(|e| {
-        panic!("Failed to register service {} because of {:?}.", METRICS_SERVICE_NAME, e);
+        panic!("Failed to register service {METRICS_SERVICE_NAME} because of {e:?}.");
     });
 
     binder::add_service(LEGACY_KEYSTORE_SERVICE_NAME, legacykeystore.as_binder()).unwrap_or_else(
         |e| {
-            panic!(
-                "Failed to register service {} because of {:?}.",
-                LEGACY_KEYSTORE_SERVICE_NAME, e
-            );
+            panic!("Failed to register service {LEGACY_KEYSTORE_SERVICE_NAME} because of {e:?}.");
         },
     );
 

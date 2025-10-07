@@ -49,12 +49,47 @@ use keystore2_apc_compat::{
 };
 use keystore2_crypto::{aes_gcm_decrypt, aes_gcm_encrypt, ZVec};
 use log::{debug, error, info, warn};
+use packagemanager_aidl::aidl::android::content::pm::IPackageManagerNative::IPackageManagerNative;
 use std::iter::IntoIterator;
 use std::thread::sleep;
 use std::time::Duration;
 
 #[cfg(test)]
 mod tests;
+
+/// Newtype holding an integer that represents an Android user ID, corresponding to a user/human
+/// profile (i.e. *not* to a specific UNIX uid assigned to a particular app).
+///
+/// This type uses an `i32` as the underlying integer type in order to match the Rust type used for
+/// AIDL `int` values, which are used to specify user IDs (recall that AIDL has no unsigned integer
+/// types, like Java).  However, other libraries (e.g. the `rustutils` crate) use `u32`,
+/// necessitating some casts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AndroidUserId(pub i32);
+
+/// Newtype holding an integer that represents a per-app uid value (i.e. *not* a user/human user
+/// ID).
+///
+/// The underlying integer type is `i64` to encompass both AIDL `int` and `long` values, as both
+/// types are used to hold uid values in different places on Keystore's external interfaces.  This
+/// also copes with other libraries (e.g. `binder` and `libc`) which use `u32` for uid values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AppUid(pub i64);
+
+impl AppUid {
+    /// Return the user/human profile user ID corresponding to this uid.
+    pub fn owning_user(&self) -> AndroidUserId {
+        AndroidUserId(rustutils::users::multiuser_get_user_id(self.0 as u32) as i32)
+    }
+
+    /// Get the calling uid for the current thread.
+    pub fn calling() -> Self {
+        Self(ThreadState::get_calling_uid() as i64)
+    }
+}
+
+/// Uid for the system.
+pub const AID_SYSTEM: AppUid = AppUid(rustutils::users::AID_SYSTEM as i64);
 
 /// A secure user ID ("sid") corresponding to an `AndroidUserId` that has been registered with a
 /// secure authenticator instance.
@@ -97,7 +132,7 @@ pub fn check_keystore_permission(perm: KeystorePerm) -> anyhow::Result<()> {
 pub fn check_grant_permission(access_vec: KeyPermSet, key: &KeyDescriptor) -> anyhow::Result<()> {
     ThreadState::with_calling_sid(|calling_sid| {
         permission::check_grant_permission(
-            ThreadState::get_calling_uid(),
+            AppUid::calling(),
             calling_sid
                 .ok_or_else(Error::sys)
                 .context(ks_err!("Cannot check permission without calling_sid."))?,
@@ -117,7 +152,7 @@ pub fn check_key_permission(
 ) -> anyhow::Result<()> {
     ThreadState::with_calling_sid(|calling_sid| {
         permission::check_key_permission(
-            ThreadState::get_calling_uid(),
+            AppUid::calling(),
             calling_sid
                 .ok_or_else(Error::sys)
                 .context(ks_err!("Cannot check permission without calling_sid."))?,
@@ -187,7 +222,7 @@ fn check_android_permission(permission: &str, err: Error) -> anyhow::Result<()> 
         permission_controller.checkPermission(
             permission,
             ThreadState::get_calling_pid(),
-            ThreadState::get_calling_uid() as i32,
+            AppUid::calling().0 as i32,
         )
     };
     let has_permissions =
@@ -508,12 +543,7 @@ pub const AID_USER_OFFSET: u32 = rustutils::users::AID_USER_OFFSET;
 
 /// AID of the keystore process itself, used for keys that
 /// keystore generates for its own use.
-pub const AID_KEYSTORE: u32 = rustutils::users::AID_KEYSTORE;
-
-/// Extracts the android user from the given uid.
-pub fn uid_to_android_user(uid: u32) -> u32 {
-    rustutils::users::multiuser_get_user_id(uid)
-}
+pub const AID_KEYSTORE: AppUid = AppUid(rustutils::users::AID_KEYSTORE as i64);
 
 /// Merges and filters two lists of key descriptors. The first input list, legacy_descriptors,
 /// is assumed to not be sorted or filtered. As such, all key descriptors in that list whose
@@ -701,4 +731,73 @@ pub(crate) fn retry_get_interface<T: FromIBinder + ?Sized>(
         sleep(wait_time);
         wait_time *= 2;
     }
+}
+
+/// Return the target SDK version for a given app.
+///
+/// Involves round-trips to PackageManager.
+pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
+    let pm: Strong<dyn IPackageManagerNative> = match binder::get_interface("package_native") {
+        Ok(pm) => pm,
+        Err(e) => {
+            warn!("failed to connect to PackageManager: {e:?}");
+            return None;
+        }
+    };
+
+    let pkg_infos = match pm.getPackageInfoWithSigningInfoForUid(uid.0 as i32) {
+        Ok(Some(infos)) => infos,
+        Ok(None) => {
+            warn!("no package info for {uid:?}");
+            return None;
+        }
+        Err(e) => {
+            warn!("failed to get package info for {uid:?}: {e:?}");
+            return None;
+        }
+    };
+
+    let mut lowest_target_sdk = None;
+    for pkg_info in pkg_infos {
+        let Some(pkg_info) = pkg_info else {
+            continue;
+        };
+        let pkg_name = &pkg_info.packageName;
+        if pkg_name.is_empty() {
+            continue;
+        }
+        match pm.getTargetSdkVersionForPackage(pkg_name) {
+            Err(e) => {
+                warn!("failed to get target SDK version for {uid:?} '{pkg_name}': {e:?}");
+                continue;
+            }
+            Ok(target_sdk) if target_sdk <= 0 => {
+                warn!("unexpected target SDK version {target_sdk} for {uid:?} '{pkg_name}'");
+                continue;
+            }
+            Ok(target_sdk) => {
+                info!("{uid:?} '{pkg_name}' has target SDK {target_sdk:?}");
+                if let Some(prev_lowest) = lowest_target_sdk {
+                    if target_sdk < prev_lowest {
+                        lowest_target_sdk = Some(target_sdk);
+                    }
+                } else {
+                    lowest_target_sdk = Some(target_sdk);
+                }
+            }
+        };
+    }
+
+    info!("{uid:?} has target SDK {lowest_target_sdk:?}");
+    lowest_target_sdk
+}
+
+/// Enable logging in unit tests.
+#[cfg(test)]
+pub fn init_test_logging() {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_tag("keystore2_test")
+            .with_max_level(log::LevelFilter::Debug),
+    );
 }
