@@ -19,7 +19,7 @@
 //! certificate chains signed by some root authority and stored in a keystore SQLite
 //! DB.
 
-use crate::error::wrapped_rkpd_error_to_ks_error;
+use crate::error::{wrapped_rkpd_error_to_ks_error, Error};
 use crate::globals::get_remotely_provisioned_component_name;
 use crate::ks_err;
 use crate::metrics_store::log_rkp_error_stats;
@@ -32,7 +32,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
 use android_security_metrics::aidl::android::security::metrics::RkpError::RkpError as MetricsRkpError;
 use android_security_rkp_aidl::aidl::android::security::rkp::RemotelyProvisionedKey::RemotelyProvisionedKey;
 use android_system_keystore2::aidl::android::system::keystore2::{
-    Domain::Domain, KeyDescriptor::KeyDescriptor,
+    Domain::Domain, KeyDescriptor::KeyDescriptor, ResponseCode::ResponseCode,
 };
 use anyhow::{Context, Result};
 use keystore2_crypto::parse_subject_from_certificate;
@@ -64,6 +64,14 @@ impl RemProvState {
             .unwrap_or(default_value)
     }
 
+    fn is_rkp_enabled(&self) -> bool {
+        let property_name = "remote_provisioning.hostname";
+        match rustutils::android::system_properties::read(property_name) {
+            Ok(Some(value)) => !value.is_empty(),
+            _ => false,
+        }
+    }
+
     fn is_asymmetric_key(&self, params: &[KeyParameter]) -> bool {
         params.iter().any(|kp| {
             matches!(
@@ -88,6 +96,14 @@ impl RemProvState {
     ) -> Result<Option<(AttestationKey, Vec<u8>)>> {
         if !self.is_asymmetric_key(params) || key.domain != Domain::APP {
             Ok(None)
+        } else if !self.is_rkp_enabled() {
+            if self.is_rkp_only() {
+                error!("RKP not enabled on an RKP-only device.");
+                Err(Error::Rc(ResponseCode::OUT_OF_KEYS_PERMANENT_ERROR))
+                    .context("RKP is not enabled on an RKP-only device. Enable RKP on the device by setting the system property.")
+            } else {
+                Ok(None)
+            }
         } else {
             match get_rkpd_attestation_key(&self.security_level, caller_uid) {
                 Err(e) => {
