@@ -70,3 +70,11 @@ flag {
   bug: "395078130"
   is_fixed_read_only: true
 }
+
+flag {
+  name: "mldsa_support"
+  namespace: "hardware_backed_security"
+  description: "Enable support for ML-DSA-65 and ML-DSA-87 in the AndroidKeyStore provider"
+  bug: "395069350"
+  is_fixed_read_only: true
+}
