@@ -33,6 +33,7 @@ rust_defaults {
         "libmessage_macro",
         "libthiserror",
         "libtokio",
+        "libandroid_security_flags_rust",
     ],
 }
 
