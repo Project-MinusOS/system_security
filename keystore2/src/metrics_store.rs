@@ -194,13 +194,14 @@ impl MetricsStore {
 pub fn log_key_creation_event_stats<U>(
     sec_level: SecurityLevel,
     key_params: &[KeyParameter],
+    origin: KeyOrigin,
     result: &Result<U>,
 ) {
     let (
         key_creation_with_general_info,
         key_creation_with_auth_info,
         key_creation_with_purpose_and_modes_info,
-    ) = process_key_creation_event_stats(sec_level, key_params, result);
+    ) = process_key_creation_event_stats(sec_level, key_params, origin, result);
 
     METRICS_STORE
         .insert_atom(AtomID::KEY_CREATION_WITH_GENERAL_INFO, key_creation_with_general_info);
@@ -217,6 +218,7 @@ pub fn log_key_creation_event_stats<U>(
 fn process_key_creation_event_stats<U>(
     sec_level: SecurityLevel,
     key_params: &[KeyParameter],
+    origin: KeyOrigin,
     result: &Result<U>,
 ) -> (KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload) {
     // In the default atom objects, fields represented by bitmaps and i32 fields
@@ -230,7 +232,14 @@ fn process_key_creation_event_stats<U>(
         algorithm: MetricsAlgorithm::ALGORITHM_UNSPECIFIED,
         key_size: -1,
         ec_curve: MetricsEcCurve::EC_CURVE_UNSPECIFIED,
-        key_origin: MetricsKeyOrigin::ORIGIN_UNSPECIFIED,
+        key_origin: match origin {
+            KeyOrigin::GENERATED => MetricsKeyOrigin::GENERATED,
+            KeyOrigin::DERIVED => MetricsKeyOrigin::DERIVED,
+            KeyOrigin::IMPORTED => MetricsKeyOrigin::IMPORTED,
+            KeyOrigin::RESERVED => MetricsKeyOrigin::RESERVED,
+            KeyOrigin::SECURELY_IMPORTED => MetricsKeyOrigin::SECURELY_IMPORTED,
+            _ => MetricsKeyOrigin::ORIGIN_UNSPECIFIED,
+        },
         error_code: 1,
         // Default for bool is false (for attestation_requested field).
         ..Default::default()
@@ -270,16 +279,6 @@ fn process_key_creation_event_stats<U>(
             }
             KsKeyParamValue::KeySize(s) => {
                 key_creation_with_general_info.key_size = s;
-            }
-            KsKeyParamValue::KeyOrigin(o) => {
-                key_creation_with_general_info.key_origin = match o {
-                    KeyOrigin::GENERATED => MetricsKeyOrigin::GENERATED,
-                    KeyOrigin::DERIVED => MetricsKeyOrigin::DERIVED,
-                    KeyOrigin::IMPORTED => MetricsKeyOrigin::IMPORTED,
-                    KeyOrigin::RESERVED => MetricsKeyOrigin::RESERVED,
-                    KeyOrigin::SECURELY_IMPORTED => MetricsKeyOrigin::SECURELY_IMPORTED,
-                    _ => MetricsKeyOrigin::ORIGIN_UNSPECIFIED,
-                }
             }
             KsKeyParamValue::HardwareAuthenticatorType(a) => {
                 key_creation_with_auth_info.user_auth_type = match a {

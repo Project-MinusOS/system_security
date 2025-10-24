@@ -84,6 +84,7 @@ fn test_user_auth_type() {
         let (_, atom_with_auth_info, _) = process_key_creation_event_stats(
             SecurityLevel::TRUSTED_ENVIRONMENT,
             &key_params,
+            KeyOrigin::GENERATED,
             &Ok(()),
         );
         assert!(matches!(
@@ -126,6 +127,7 @@ fn test_log_auth_timeout_seconds() {
         let (_, atom_with_auth_info, _) = process_key_creation_event_stats(
             SecurityLevel::TRUSTED_ENVIRONMENT,
             &key_params,
+            KeyOrigin::GENERATED,
             &Ok(()),
         );
         assert!(matches!(
@@ -150,7 +152,7 @@ fn test_security_level() {
     ];
     for (security_level, expected) in test_cases {
         let (_, atom_with_auth_info, _) =
-            process_key_creation_event_stats(security_level, &[], &Ok(()));
+            process_key_creation_event_stats(security_level, &[], KeyOrigin::GENERATED, &Ok(()));
         assert!(matches!(
             atom_with_auth_info,
             KeystoreAtomPayload::KeyCreationWithAuthInfo(a)
