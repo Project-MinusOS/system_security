@@ -103,6 +103,9 @@ fn main() {
     shared_secret_negotiation::perform_shared_secret_negotiation();
 
     info!("Starting thread pool now.");
+    if android_security_flags::thread_safe_key_generation() {
+        binder::ProcessState::set_thread_pool_max_thread_count(20);
+    }
     binder::ProcessState::start_thread_pool();
 
     let ks_service = KeystoreService::new_native_binder(id_rotation_state).unwrap_or_else(|e| {

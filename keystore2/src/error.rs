@@ -101,6 +101,7 @@ impl From<RkpdError> for Error {
                 Error::Rc(ResponseCode::SYSTEM_ERROR)
             }
             RkpdError::BinderTransaction(s) => Error::BinderTransaction(s),
+            RkpdError::TooManyConcurrentOperations => Error::Rc(ResponseCode::BACKEND_BUSY),
         }
     }
 }

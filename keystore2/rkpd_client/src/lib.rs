@@ -27,6 +27,7 @@ use anyhow::{Context, Result};
 use binder::{BinderFeatures, Interface, StatusCode, Strong};
 use log::{error, warn};
 use message_macro::source_location_msg;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -44,8 +45,8 @@ fn tokio_rt() -> tokio::runtime::Runtime {
 /// Errors occurred during the interaction with RKPD.
 #[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-    /// An RKPD request gets cancelled.
-    #[error("An RKPD request gets cancelled")]
+    /// RKP request was cancelled.
+    #[error("RKP request was cancelled")]
     RequestCancelled,
 
     /// Failed to get registration.
@@ -71,6 +72,10 @@ pub enum Error {
     /// Wraps a Binder status code.
     #[error("Binder transaction error {0:?}")]
     BinderTransaction(StatusCode),
+
+    /// Exceeds the maximum number of concurrent operations.
+    #[error("Too many concurrent operations")]
+    TooManyConcurrentOperations,
 }
 
 impl From<StatusCode> for Error {
@@ -296,8 +301,37 @@ async fn store_rkpd_attestation_key_async(
     store_rkpd_attestation_key_with_registration_async(&registration, key_blob, upgraded_blob).await
 }
 
+// Limiting the number of concurrent operations to avoid starving other threads in the system.
+// The number is based on the number of threads in the system.
+static RKP_MAX_CONCURRENT_OPERATIONS: i32 = 15;
+static RKP_CONCURRENT_OPERATIONS: AtomicI32 = AtomicI32::new(0);
+
+struct ConcurrentOperation;
+
+impl ConcurrentOperation {
+    fn start() -> Result<Self> {
+        let prev_count = RKP_CONCURRENT_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+        if prev_count >= RKP_MAX_CONCURRENT_OPERATIONS {
+            RKP_CONCURRENT_OPERATIONS.fetch_sub(1, Ordering::Relaxed);
+            return Err(Error::TooManyConcurrentOperations.into());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for ConcurrentOperation {
+    fn drop(&mut self) {
+        RKP_CONCURRENT_OPERATIONS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Get attestation key from RKPD.
 pub fn get_rkpd_attestation_key(rpc_name: &str, caller_uid: u32) -> Result<RemotelyProvisionedKey> {
+    let _guard: ConcurrentOperation;
+    if android_security_flags::thread_safe_key_generation() {
+        _guard = ConcurrentOperation::start()?;
+    }
+
     tokio_rt().block_on(get_rkpd_attestation_key_async(rpc_name, caller_uid))
 }
 
@@ -307,6 +341,11 @@ pub fn store_rkpd_attestation_key(
     key_blob: &[u8],
     upgraded_blob: &[u8],
 ) -> Result<()> {
+    let _guard: ConcurrentOperation;
+    if android_security_flags::thread_safe_key_generation() {
+        _guard = ConcurrentOperation::start()?;
+    }
+
     tokio_rt().block_on(store_rkpd_attestation_key_async(rpc_name, key_blob, upgraded_blob))
 }
 

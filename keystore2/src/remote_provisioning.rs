@@ -108,8 +108,13 @@ impl RemProvState {
             match get_rkpd_attestation_key(&self.security_level, caller_uid) {
                 Err(e) => {
                     if self.is_rkp_only() {
-                        error!("Failed to get rkpd key: {e:?}");
-                        return Err(wrapped_rkpd_error_to_ks_error(&e)).context(format!("{e:?}"));
+                        let ks_error = wrapped_rkpd_error_to_ks_error(&e);
+                        if let Error::Rc(response_code) = ks_error {
+                            if response_code != ResponseCode::BACKEND_BUSY {
+                                error!("Failed to get rkpd key: {e:?}");
+                            }
+                            return Err(ks_error).context(format!("{e:?}"));
+                        }
                     }
                     warn!("Failed to get rkpd key: {e:?}");
                     log_rkp_error_stats(
