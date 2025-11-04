@@ -38,6 +38,7 @@ pub mod permission;
 pub mod raw_device;
 pub mod remote_provisioning;
 pub mod security_level;
+pub mod security_level_manager;
 pub mod service;
 pub mod shared_secret_negotiation;
 pub mod utils;
