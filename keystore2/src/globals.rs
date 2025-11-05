@@ -116,8 +116,11 @@ impl<T: FromIBinder + ?Sized> DevicesMap<T> {
             .map(|(dev, hw_info)| ((*dev).clone(), (*hw_info).clone(), *uuid))
     }
 
-    fn devices(&self) -> Vec<Strong<T>> {
-        self.devices_by_uuid.values().map(|(dev, _)| dev.clone()).collect()
+    fn devices(&self) -> Vec<(Strong<T>, SecurityLevel)> {
+        self.devices_by_uuid
+            .values()
+            .map(|(dev, hw_info)| (dev.clone(), hw_info.securityLevel))
+            .collect()
     }
 
     /// The requested security level and the security level of the actual implementation may
@@ -363,8 +366,8 @@ pub fn get_keymint_dev_by_uuid(
     }
 }
 
-/// Return all known keymint devices.
-pub fn get_keymint_devices() -> Vec<Strong<dyn IKeyMintDevice>> {
+/// Return all known IKeyMintDevice instances along with their security levels.
+pub fn get_keymint_devices() -> Vec<(Strong<dyn IKeyMintDevice>, SecurityLevel)> {
     KEY_MINT_DEVICES.lock().unwrap().devices()
 }
 
