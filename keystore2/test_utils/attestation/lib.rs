@@ -18,7 +18,8 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     Algorithm::Algorithm, BlockMode::BlockMode, Digest::Digest, EcCurve::EcCurve,
     HardwareAuthenticatorType::HardwareAuthenticatorType, KeyOrigin::KeyOrigin,
     KeyParameter::KeyParameter, KeyParameterValue::KeyParameterValue as KPV,
-    KeyPurpose::KeyPurpose, PaddingMode::PaddingMode, Tag::Tag, TagType::TagType,
+    KeyPurpose::KeyPurpose, MlDsaVariant::MlDsaVariant, PaddingMode::PaddingMode, Tag::Tag,
+    TagType::TagType,
 };
 use der::asn1::{Null, ObjectIdentifier, OctetStringRef, SetOfVec};
 use der::{oid::AssociatedOid, DerOrd, Enumerated, Reader, Sequence, SliceReader};
@@ -309,6 +310,7 @@ fn decode_value_from_bytes(
                     Tag::ALGORITHM => KPV::Algorithm(Algorithm(value)),
                     Tag::EC_CURVE => KPV::EcCurve(EcCurve(value)),
                     Tag::ORIGIN => KPV::Origin(KeyOrigin(value)),
+                    Tag::ML_DSA_VARIANT => KPV::MlDsaVariant(MlDsaVariant(value)),
                     Tag::USER_AUTH_TYPE => {
                         KPV::HardwareAuthenticatorType(HardwareAuthenticatorType(value))
                     }

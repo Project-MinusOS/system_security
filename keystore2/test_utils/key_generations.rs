@@ -24,7 +24,8 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     Algorithm::Algorithm, BlockMode::BlockMode, Digest::Digest, EcCurve::EcCurve,
     ErrorCode::ErrorCode, HardwareAuthenticatorType::HardwareAuthenticatorType,
     KeyOrigin::KeyOrigin, KeyParameter::KeyParameter, KeyParameterValue::KeyParameterValue,
-    KeyPurpose::KeyPurpose, PaddingMode::PaddingMode, SecurityLevel::SecurityLevel, Tag::Tag,
+    KeyPurpose::KeyPurpose, MlDsaVariant::MlDsaVariant, PaddingMode::PaddingMode,
+    SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_system_keystore2::aidl::android::system::keystore2::{
     AuthenticatorSpec::AuthenticatorSpec, Authorization::Authorization,
@@ -79,6 +80,7 @@ pub const ALLOWED_TAGS_IN_KEY_AUTHS: &[Tag] = &[
     Tag::MAX_BOOT_LEVEL,
     Tag::MAX_USES_PER_BOOT,
     Tag::MIN_MAC_LENGTH,
+    Tag::ML_DSA_VARIANT,
     Tag::NO_AUTH_REQUIRED,
     Tag::ORIGIN,
     Tag::ORIGINATION_EXPIRE_DATETIME,
@@ -680,28 +682,74 @@ pub fn generate_ec_key(
         .purpose(KeyPurpose::VERIFY)
         .digest(digest)
         .ec_curve(ec_curve);
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
+    generate_asymmetric_key(sl, &descriptor, &gen_params)
+}
 
-    let key_metadata = sl.binder.generateKey(
-        &KeyDescriptor { domain, nspace, alias, blob: None },
-        None,
-        &gen_params,
-        0,
-        b"entropy",
-    )?;
+fn generate_asymmetric_key(
+    sl: &SecLevel,
+    descriptor: &KeyDescriptor,
+    gen_params: &[KeyParameter],
+) -> binder::Result<KeyMetadata> {
+    let key_metadata = sl.binder.generateKey(descriptor, None, gen_params, 0, b"entropy")?;
 
     // Must have a public key.
     assert!(key_metadata.certificate.is_some());
 
-    // Should not have an attestation record.
-    assert!(key_metadata.certificateChain.is_none());
+    if gen_params.iter().any(|kp| matches!(kp.tag, Tag::ATTESTATION_CHALLENGE)) {
+        // Should have an attestation record.
+        assert!(key_metadata.certificateChain.is_some());
+    } else {
+        // Should not have an attestation record.
+        assert!(key_metadata.certificateChain.is_none());
+    }
 
-    if domain == Domain::BLOB {
+    if descriptor.domain == Domain::BLOB {
         assert!(key_metadata.key.blob.is_some());
     } else {
         assert!(key_metadata.key.blob.is_none());
     }
-    check_key_authorizations(sl, &key_metadata.authorizations, &gen_params, KeyOrigin::GENERATED);
+    check_key_authorizations(sl, &key_metadata.authorizations, gen_params, KeyOrigin::GENERATED);
     Ok(key_metadata)
+}
+
+/// Generate ML-DSA signing key.
+pub fn generate_mldsa_key(
+    sl: &SecLevel,
+    domain: Domain,
+    nspace: i64,
+    alias: Option<String>,
+    variant: MlDsaVariant,
+) -> binder::Result<KeyMetadata> {
+    let gen_params = AuthSetBuilder::new()
+        .no_auth_required()
+        .algorithm(Algorithm::ML_DSA)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::NONE)
+        .mldsa_variant(variant);
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
+    generate_asymmetric_key(sl, &descriptor, &gen_params)
+}
+
+/// Generate attested ML-DSA signing key.
+pub fn generate_attested_mldsa_key(
+    sl: &SecLevel,
+    domain: Domain,
+    nspace: i64,
+    alias: Option<String>,
+    variant: MlDsaVariant,
+) -> binder::Result<KeyMetadata> {
+    let gen_params = AuthSetBuilder::new()
+        .no_auth_required()
+        .algorithm(Algorithm::ML_DSA)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::NONE)
+        .mldsa_variant(variant)
+        .attestation_challenge(b"challenge".to_vec());
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
+    generate_asymmetric_key(sl, &descriptor, &gen_params)
 }
 
 /// Generate a RSA key with the given key parameters, alias, domain and namespace.
@@ -737,30 +785,26 @@ pub fn generate_rsa_key(
     if let Some(value) = &key_params.att_challenge {
         gen_params = gen_params.attestation_challenge(value.to_vec())
     }
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
 
-    let key_metadata = match sl.binder.generateKey(
-        &KeyDescriptor { domain, nspace, alias, blob: None },
-        attest_key,
-        &gen_params,
-        0,
-        b"entropy",
-    ) {
-        Ok(metadata) => metadata,
-        Err(e) => {
-            return if is_rkp_only_unknown_on_gsi(sl.level)
-                && e.service_specific_error() == ErrorCode::ATTESTATION_KEYS_NOT_PROVISIONED.0
-            {
-                // GSI replaces the values for remote_prov_prop properties (since they’re
-                // system_internal_prop properties), so on GSI the properties are not
-                // reliable indicators of whether StrongBox/TEE are RKP-only or not.
-                // Test can be skipped if it generates a key with attestation but doesn't provide
-                // an ATTEST_KEY and rkp-only property is undetermined.
-                Ok(None)
-            } else {
-                Err(e)
-            };
-        }
-    };
+    let key_metadata =
+        match sl.binder.generateKey(&descriptor, attest_key, &gen_params, 0, b"entropy") {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                return if is_rkp_only_unknown_on_gsi(sl.level)
+                    && e.service_specific_error() == ErrorCode::ATTESTATION_KEYS_NOT_PROVISIONED.0
+                {
+                    // GSI replaces the values for remote_prov_prop properties (since they’re
+                    // system_internal_prop properties), so on GSI the properties are not
+                    // reliable indicators of whether StrongBox/TEE are RKP-only or not.
+                    // Test can be skipped if it generates a key with attestation but doesn't provide
+                    // an ATTEST_KEY and rkp-only property is undetermined.
+                    Ok(None)
+                } else {
+                    Err(e)
+                };
+            }
+        };
 
     // Must have a public key.
     assert!(key_metadata.certificate.is_some());
