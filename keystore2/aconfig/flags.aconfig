@@ -78,3 +78,11 @@ flag {
   bug: "395069350"
   is_fixed_read_only: true
 }
+
+flag {
+  name: "atoms_v2"
+  namespace: "hardware_backed_security"
+  description: "Emit second generation of Keystore2 atoms"
+  bug: "393058909"
+  is_fixed_read_only: true
+}
