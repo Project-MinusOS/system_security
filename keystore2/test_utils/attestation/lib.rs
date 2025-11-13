@@ -176,6 +176,7 @@ impl<'a> der::DecodeValue<'a> for AuthorizationList<'a> {
         next = decode_opt_field(decoder, next, &mut auths, Tag::CALLER_NONCE)?;
         next = decode_opt_field(decoder, next, &mut auths, Tag::MIN_MAC_LENGTH)?;
         next = decode_opt_field(decoder, next, &mut auths, Tag::EC_CURVE)?;
+        next = decode_opt_field(decoder, next, &mut auths, Tag::ML_DSA_VARIANT)?;
         next = decode_opt_field(decoder, next, &mut auths, Tag::RSA_PUBLIC_EXPONENT)?;
         next = decode_opt_field(decoder, next, &mut auths, Tag::RSA_OAEP_MGF_DIGEST)?;
         next = decode_opt_field(decoder, next, &mut auths, Tag::ROLLBACK_RESISTANCE)?;

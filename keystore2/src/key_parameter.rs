@@ -101,7 +101,7 @@ pub use android_hardware_security_keymint::aidl::android::hardware::security::ke
     HardwareAuthenticatorType::HardwareAuthenticatorType, KeyOrigin::KeyOrigin,
     KeyParameter::KeyParameter as KmKeyParameter,
     KeyParameterValue::KeyParameterValue as KmKeyParameterValue, KeyPurpose::KeyPurpose,
-    PaddingMode::PaddingMode, SecurityLevel::SecurityLevel, Tag::Tag,
+    MlDsaVariant::MlDsaVariant, PaddingMode::PaddingMode, SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_system_keystore2::aidl::android::system::keystore2::Authorization::Authorization;
 use anyhow::{Context, Result};
@@ -182,6 +182,7 @@ implement_associate_primitive_for_aidl_enum! {EcCurve}
 implement_associate_primitive_for_aidl_enum! {HardwareAuthenticatorType}
 implement_associate_primitive_for_aidl_enum! {KeyOrigin}
 implement_associate_primitive_for_aidl_enum! {KeyPurpose}
+implement_associate_primitive_for_aidl_enum! {MlDsaVariant}
 implement_associate_primitive_for_aidl_enum! {PaddingMode}
 implement_associate_primitive_for_aidl_enum! {SecurityLevel}
 
@@ -870,6 +871,11 @@ pub enum KeyParameterValue {
     #[serde(serialize_with = "serialize_primitive")]
     #[key_param(tag = EC_CURVE, field = EcCurve)]
     EcCurve(EcCurve),
+    /// The ML-DSA variant.
+    #[serde(deserialize_with = "deserialize_primitive")]
+    #[serde(serialize_with = "serialize_primitive")]
+    #[key_param(tag = ML_DSA_VARIANT, field = MlDsaVariant)]
+    MlDsaVariant(MlDsaVariant),
     /// Value of the public exponent for an RSA key pair
     #[key_param(tag = RSA_PUBLIC_EXPONENT, field = LongInteger)]
     RSAPublicExponent(i64),

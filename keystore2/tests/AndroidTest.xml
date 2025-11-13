@@ -15,6 +15,10 @@
 -->
 <configuration description="Config to run keystore2_client_tests device tests.">
 
+    <target_preparer class="com.android.tradefed.targetprep.WifiPreparer">
+        <option name="verify-only" value="true" />
+    </target_preparer>
+
     <target_preparer class="com.android.tradefed.targetprep.RootTargetPreparer">
     </target_preparer>
 
