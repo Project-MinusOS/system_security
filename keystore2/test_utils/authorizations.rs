@@ -19,8 +19,8 @@ use std::ops::Deref;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, Digest::Digest, EcCurve::EcCurve,
     HardwareAuthenticatorType::HardwareAuthenticatorType, KeyParameter::KeyParameter,
-    KeyParameterValue::KeyParameterValue, KeyPurpose::KeyPurpose, PaddingMode::PaddingMode,
-    Tag::Tag,
+    KeyParameterValue::KeyParameterValue, KeyPurpose::KeyPurpose, MlDsaVariant::MlDsaVariant,
+    PaddingMode::PaddingMode, Tag::Tag,
 };
 
 /// Helper struct to create set of Authorizations.
@@ -60,6 +60,15 @@ impl AuthSetBuilder {
     /// Add EC-Curve.
     pub fn ec_curve(mut self, e: EcCurve) -> Self {
         self.0.push(KeyParameter { tag: Tag::EC_CURVE, value: KeyParameterValue::EcCurve(e) });
+        self
+    }
+
+    /// Add ML-DSA variant
+    pub fn mldsa_variant(mut self, v: MlDsaVariant) -> Self {
+        self.0.push(KeyParameter {
+            tag: Tag::ML_DSA_VARIANT,
+            value: KeyParameterValue::MlDsaVariant(v),
+        });
         self
     }
 
