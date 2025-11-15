@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::perform_sample_sign_operation;
+use crate::keystore2_client_test_utils::{delete_app_key, perform_sample_sign_operation};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, Digest::Digest, ErrorCode::ErrorCode, KeyPurpose::KeyPurpose,
 };
@@ -73,6 +73,7 @@ fn keystore2_hmac_key_op_success() {
             Ok(()),
             create_hmac_key_and_operation(&sl, &alias, key_size, mac_len, min_mac_len, digest,)
         );
+        delete_app_key(&sl.keystore2, &alias).unwrap();
     }
 }
 
@@ -97,6 +98,7 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_key_size() {
 
         match result {
             Ok(_) => {
+                delete_app_key(&sl.keystore2, &alias).unwrap();
                 assert!((key_size >= 64 && key_size % 8 == 0));
             }
             Err(e) => {
@@ -126,6 +128,7 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_min_mac_length() {
             digest,
         )) {
             Ok(_) => {
+                delete_app_key(&sl.keystore2, &alias).unwrap();
                 assert!((min_mac_len >= 64 && min_mac_len % 8 == 0));
             }
             Err(e) => {
@@ -251,6 +254,7 @@ fn keystore2_hmac_key_op_with_mac_len_greater_than_digest_len_fail() {
 
         assert!(result.is_err());
         assert_eq!(Error::Km(ErrorCode::UNSUPPORTED_MAC_LENGTH), result.unwrap_err());
+        delete_app_key(&sl.keystore2, &alias).unwrap();
     }
 }
 
@@ -281,5 +285,6 @@ fn keystore2_hmac_key_op_with_mac_len_less_than_min_mac_len_fail() {
 
         assert!(result.is_err());
         assert_eq!(Error::Km(ErrorCode::INVALID_MAC_LENGTH), result.unwrap_err());
+        delete_app_key(&sl.keystore2, &alias).unwrap();
     }
 }

@@ -15,12 +15,6 @@
 //! This module implements the Android Protected Confirmation (APC) service as defined
 //! in the android.security.apc AIDL spec.
 
-use std::{
-    cmp::PartialEq,
-    collections::HashMap,
-    sync::{mpsc::Sender, Arc, Mutex},
-};
-
 use crate::error::anyhow_error_to_cstring;
 use crate::ks_err;
 use crate::utils::{compat_2_response_code, ui_opts_2_compat, watchdog as wd};
@@ -36,7 +30,13 @@ use android_security_apc::binder::{
 use anyhow::{Context, Result};
 use keystore2_apc_compat::ApcHal;
 use keystore2_selinux as selinux;
+use log::error;
 use std::time::{Duration, Instant};
+use std::{
+    cmp::PartialEq,
+    collections::HashMap,
+    sync::{mpsc::Sender, Arc, Mutex},
+};
 
 /// This is the main APC error type, it wraps binder exceptions and the
 /// APC ResponseCode.
@@ -80,7 +80,7 @@ impl Error {
 ///
 /// All non `Error` error conditions get mapped onto ResponseCode::SYSTEM_ERROR`.
 pub fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
-    log::error!("{:#?}", e);
+    error!("{e:#?}");
     let root_cause = e.root_cause();
     let rc = match root_cause.downcast_ref::<Error>() {
         Some(Error::Rc(rcode)) => rcode.0,
@@ -210,7 +210,7 @@ impl ApcManager {
                 state.rate_limiting.remove(&uid);
                 // Send confirmation token to the enforcement module.
                 if let Err(e) = state.confirmation_token_sender.send(confirmation_token.to_vec()) {
-                    log::error!("Got confirmation token, but receiver would not have it. {:?}", e);
+                    error!("Got confirmation token, but receiver would not have it. {e:?}");
                 }
             }
             // If cancelled by the user or if aborted by the client.
@@ -221,7 +221,7 @@ impl ApcManager {
                 rate_info.timestamp = start;
             }
             (ResponseCode::OK, _, None) => {
-                log::error!(
+                error!(
                     "Confirmation prompt was successful but no confirmation token was returned."
                 );
             }
@@ -232,10 +232,10 @@ impl ApcManager {
 
         if let Ok(listener) = callback.into_interface::<dyn IConfirmationCallback>() {
             if let Err(e) = listener.onCompleted(rc, data_confirmed) {
-                log::error!("Reporting completion to client failed {:?}", e)
+                error!("Reporting completion to client failed {e:?}")
             }
         } else {
-            log::error!("SpIBinder is not a IConfirmationCallback.");
+            error!("SpIBinder is not a IConfirmationCallback.");
         }
     }
 

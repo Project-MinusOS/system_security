@@ -53,7 +53,9 @@ use crate::impl_metadata; // This is in database/utils.rs
 use crate::key_parameter::{KeyParameter, KeyParameterValue, Tag};
 use crate::ks_err;
 use crate::permission::KeyPermSet;
-use crate::utils::{get_current_time_in_milliseconds, watchdog as wd, AID_USER_OFFSET};
+use crate::utils::{
+    get_current_time_in_milliseconds, watchdog as wd, Challenge, SecureUserId, AID_USER_OFFSET,
+};
 use crate::{
     error::{Error as KsError, ErrorCode, ResponseCode},
     super_key::SuperKeyType,
@@ -69,15 +71,11 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor,
 };
 use anyhow::{anyhow, Context, Result};
-use keystore2_flags;
-use std::{convert::TryFrom, convert::TryInto, ops::Deref, sync::LazyLock, time::SystemTimeError};
-use utils as db_utils;
-use utils::SqlField;
-
 use keystore2_crypto::ZVec;
-use log::error;
+use keystore2_flags;
+use log::{error, info};
 #[cfg(not(test))]
-use rand::prelude::random;
+use rand::random;
 use rusqlite::{
     params, params_from_iter,
     types::FromSql,
@@ -86,13 +84,15 @@ use rusqlite::{
     types::{FromSqlError, Value, ValueRef},
     Connection, OptionalExtension, ToSql, Transaction,
 };
-
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, SystemTime},
 };
+use std::{convert::TryFrom, convert::TryInto, ops::Deref, sync::LazyLock, time::SystemTimeError};
+use utils as db_utils;
+use utils::SqlField;
 
 use TransactionBehavior::Immediate;
 
@@ -870,9 +870,13 @@ impl AuthTokenEntry {
     }
 
     /// Checks if this auth token satisfies the given authentication information.
-    pub fn satisfies(&self, user_secure_ids: &[i64], auth_type: HardwareAuthenticatorType) -> bool {
-        user_secure_ids.iter().any(|&sid| {
-            (sid == self.auth_token.userId || sid == self.auth_token.authenticatorId)
+    pub fn satisfies(
+        &self,
+        user_sids: &[SecureUserId],
+        auth_type: HardwareAuthenticatorType,
+    ) -> bool {
+        user_sids.iter().any(|&sid| {
+            (sid.0 == self.auth_token.userId || sid.0 == self.auth_token.authenticatorId)
                 && ((auth_type.0 & self.auth_token.authenticatorType.0) != 0)
         })
     }
@@ -893,8 +897,8 @@ impl AuthTokenEntry {
     }
 
     /// Returns the challenge value of the auth token.
-    pub fn challenge(&self) -> i64 {
-        self.auth_token.challenge
+    pub fn challenge(&self) -> Challenge {
+        Challenge(self.auth_token.challenge)
     }
 }
 
@@ -988,7 +992,7 @@ impl KeystoreDB {
             .context("Trying to prepare query to mark superseded keyblobs")?;
         stmt.execute(params![BlobState::Superseded, sc_key_blob, sc_key_blob])
             .context(ks_err!("Failed to set state=superseded state for keyblobs"))?;
-        log::info!("marked non-current blobentry rows for keyblobs as superseded");
+        info!("marked non-current blobentry rows for keyblobs as superseded");
 
         // Mark keyblobs that don't have a corresponding key.
         // This may take a while if there are excessive numbers of keys in the database.
@@ -1003,7 +1007,7 @@ impl KeystoreDB {
             .context("Trying to prepare query to mark orphaned keyblobs")?;
         stmt.execute(params![BlobState::Orphaned, sc_key_blob])
             .context(ks_err!("Failed to set state=orphaned for keyblobs"))?;
-        log::info!("marked orphaned blobentry rows for keyblobs");
+        info!("marked orphaned blobentry rows for keyblobs");
 
         // Add an index to make it fast to find out of date blobentry rows.
         let _wp = wd::watch("KeystoreDB::from_1_to_2 add blobentry index");
@@ -1290,6 +1294,40 @@ impl KeystoreDB {
         }
     }
 
+    /// Return the top `max_usize` uids by numbers of keys owned, together with their key
+    /// count. Only return uids that own more than `min_key_count` keys.
+    pub fn per_uid_counts(
+        &mut self,
+        max_uids: usize,
+        min_key_count: usize,
+    ) -> Result<Vec<(i32, usize)>> {
+        self.with_transaction(Immediate("TX_per_uid_counts"), |tx| {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT namespace, COUNT(*) FROM persistent.keyentry
+                         WHERE domain = ?
+                         GROUP BY namespace
+                         ORDER BY COUNT(*) DESC
+                         LIMIT ?;",
+                )
+                .context(ks_err!("KeystoreDB::per_uid_counts: failed to prepare statement"))?;
+            let mut rows = stmt
+                .query(params![Domain::APP.0, max_uids])
+                .context(ks_err!("KeystoreDB::per_uid_counts: query failed"))?;
+            let mut results = Vec::new();
+            db_utils::with_rows_extract_all(&mut rows, |row| {
+                let uid: i32 = row.get(0).context("Failed to read namespace column")?;
+                let count: usize = row.get(1).context("Failed to read count")?;
+                if count > min_key_count {
+                    results.push((uid, count));
+                }
+                Ok(())
+            })?;
+            Ok(results).no_gc()
+        })
+        .context("KeystoreDB::per_uid_counts")
+    }
+
     /// This function is intended to be used by the garbage collector.
     /// It deletes the blobs given by `blob_ids_to_delete`. It then tries to find up to `max_blobs`
     /// superseded key blobs that might need special handling by the garbage collector.
@@ -1316,56 +1354,25 @@ impl KeystoreDB {
             Self::cleanup_unreferenced(tx).context("Trying to cleanup unreferenced.")?;
 
             // Find up to `max_blobs` more out-of-date key blobs, load their metadata and return it.
-            let result: Vec<(i64, Vec<u8>)> = if keystore2_flags::use_blob_state_column() {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob find_next v2");
-                let mut stmt = tx
-                    .prepare(
-                        "SELECT id, blob FROM persistent.blobentry
+            let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob find_next v2");
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, blob FROM persistent.blobentry
                         WHERE subcomponent_type = ? AND state != ?
                         LIMIT ?;",
-                    )
-                    .context("Trying to prepare query for superseded blobs.")?;
+                )
+                .context("Trying to prepare query for superseded blobs.")?;
 
-                let rows = stmt
-                    .query_map(
-                        params![SubComponentType::KEY_BLOB, BlobState::Current, max_blobs as i64],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .context("Trying to query superseded blob.")?;
+            let rows = stmt
+                .query_map(
+                    params![SubComponentType::KEY_BLOB, BlobState::Current, max_blobs as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .context("Trying to query superseded blob.")?;
 
-                rows.collect::<Result<Vec<(i64, Vec<u8>)>, rusqlite::Error>>()
-                    .context("Trying to extract superseded blobs.")?
-            } else {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob find_next v1");
-                let mut stmt = tx
-                    .prepare(
-                        "SELECT id, blob FROM persistent.blobentry
-                        WHERE subcomponent_type = ?
-                        AND (
-                            id NOT IN (
-                                SELECT MAX(id) FROM persistent.blobentry
-                                WHERE subcomponent_type = ?
-                                GROUP BY keyentryid, subcomponent_type
-                            )
-                        OR keyentryid NOT IN (SELECT id FROM persistent.keyentry)
-                    ) LIMIT ?;",
-                    )
-                    .context("Trying to prepare query for superseded blobs.")?;
-
-                let rows = stmt
-                    .query_map(
-                        params![
-                            SubComponentType::KEY_BLOB,
-                            SubComponentType::KEY_BLOB,
-                            max_blobs as i64,
-                        ],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .context("Trying to query superseded blob.")?;
-
-                rows.collect::<Result<Vec<(i64, Vec<u8>)>, rusqlite::Error>>()
-                    .context("Trying to extract superseded blobs.")?
-            };
+            let result: Vec<(i64, Vec<u8>)> = rows
+                .collect::<Result<Vec<(i64, Vec<u8>)>, rusqlite::Error>>()
+                .context("Trying to extract superseded blobs.")?;
 
             let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob load_metadata");
             let result = result
@@ -1385,30 +1392,13 @@ impl KeystoreDB {
 
             // We did not find any out-of-date key blobs, so let's remove other types of superseded
             // blob in one transaction.
-            if keystore2_flags::use_blob_state_column() {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob delete v2");
-                tx.execute(
-                    "DELETE FROM persistent.blobentry
+            let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob delete v2");
+            tx.execute(
+                "DELETE FROM persistent.blobentry
                     WHERE subcomponent_type != ? AND state != ?;",
-                    params![SubComponentType::KEY_BLOB, BlobState::Current],
-                )
-                .context("Trying to purge out-of-date blobs (other than keyblobs)")?;
-            } else {
-                let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob delete v1");
-                tx.execute(
-                    "DELETE FROM persistent.blobentry
-                    WHERE NOT subcomponent_type = ?
-                    AND (
-                        id NOT IN (
-                           SELECT MAX(id) FROM persistent.blobentry
-                           WHERE NOT subcomponent_type = ?
-                           GROUP BY keyentryid, subcomponent_type
-                        ) OR keyentryid NOT IN (SELECT id FROM persistent.keyentry)
-                    );",
-                    params![SubComponentType::KEY_BLOB, SubComponentType::KEY_BLOB],
-                )
-                .context("Trying to purge superseded blobs.")?;
-            }
+                params![SubComponentType::KEY_BLOB, BlobState::Current],
+            )
+            .context("Trying to purge out-of-date blobs (other than keyblobs)")?;
 
             Ok(vec![]).no_gc()
         })
@@ -1417,14 +1407,39 @@ impl KeystoreDB {
 
     /// This maintenance function should be called only once before the database is used for the
     /// first time. It restores the invariant that `KeyLifeCycle::Existing` is a transient state.
+    ///
     /// The function transitions all key entries from Existing to Unreferenced unconditionally and
     /// returns the number of rows affected. If this returns a value greater than 0, it means that
     /// Keystore crashed at some point during key generation. Callers may want to log such
     /// occurrences.
-    /// Unlike with `mark_unreferenced`, we don't need to purge grants, because only keys that made
+    ///
+    /// Unlike with `remove_key_rows`, we don't need to purge grants, because only keys that made
     /// it to `KeyLifeCycle::Live` may have grants.
+    ///
+    /// The function also marks any `blobentry` rows that don't have an owning `keyentry` row as
+    /// orphaned.
     pub fn cleanup_leftovers(&mut self) -> Result<usize> {
         let _wp = wd::watch("KeystoreDB::cleanup_leftovers");
+
+        if keystore2_flags::remove_rebound_keyblobs_fix() {
+            self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
+                // Mark as orphaned any blobentry rows that have no associated keyentry row.
+                // Apply a per-reboot limit to avoid the possibility of delayed startup.
+                tx.execute(
+                    "UPDATE persistent.blobentry SET state = ?
+                    WHERE id IN (
+                      SELECT id FROM persistent.blobentry
+                      WHERE keyentryid NOT IN (
+                        SELECT id FROM persistent.keyentry
+                      )
+                      LIMIT 100000);",
+                    params![BlobState::Orphaned],
+                )
+                .context("Trying to mark orphaned blobs")
+                .need_gc()
+            })
+            .context(ks_err!())?;
+        }
 
         self.with_transaction(Immediate("TX_cleanup_leftovers"), |tx| {
             tx.execute(
@@ -1790,6 +1805,9 @@ impl KeystoreDB {
                     .context(ks_err!("Domain {:?} must be either App or SELinux.", domain));
             }
         }
+        // Mark any existing key for the alias/domain/namespace/key_type as `Unreferenced` (and wipe
+        // its alias/domain/namespace info) so it can be removed in a subsequent GC pass (in
+        // `cleanup_unreferenced()`).
         let updated = tx
             .execute(
                 "UPDATE persistent.keyentry
@@ -1798,6 +1816,7 @@ impl KeystoreDB {
                 params![KeyLifeCycle::Unreferenced, alias, domain.0 as u32, namespace, key_type],
             )
             .context(ks_err!("Failed to rebind existing entry."))?;
+        // Bind the new key ID to the alias and make it `Live`.
         let result = tx
             .execute(
                 "UPDATE persistent.keyentry
@@ -2292,7 +2311,7 @@ impl KeystoreDB {
             .context("Failed to update key usage count.")?;
 
             match limit {
-                1 => Self::mark_unreferenced(tx, key_id)
+                1 => Self::remove_key_rows(tx, key_id)
                     .map(|need_gc| (need_gc, ()))
                     .context("Trying to mark limited use key for deletion."),
                 0 => Err(KsError::Km(ErrorCode::INVALID_KEY_BLOB)).context("Key is exhausted."),
@@ -2420,7 +2439,11 @@ impl KeystoreDB {
         Ok((key_id_guard, key_entry))
     }
 
-    fn mark_unreferenced(tx: &Transaction, key_id: i64) -> Result<bool> {
+    /// Remove database table rows associated with the given `key_id`. The one exception
+    /// is that `blobentry` rows are not immediately deleted, but are instead marked as
+    /// orphaned so they can be removed in a later GC operation (which also involves
+    /// notifying the owning KeyMint of keyblob deletion).
+    fn remove_key_rows(tx: &Transaction, key_id: i64) -> Result<bool> {
         let updated = tx
             .execute("DELETE FROM persistent.keyentry WHERE id = ?;", params![key_id])
             .context("Trying to delete keyentry.")?;
@@ -2440,7 +2463,7 @@ impl KeystoreDB {
             "UPDATE persistent.blobentry SET state = ? WHERE keyentryid = ?",
             params![BlobState::Orphaned, key_id],
         )
-        .context("Trying to mark blobentrys as superseded")?;
+        .context("Trying to mark blobentrys as orphaned")?;
         Ok(updated != 0)
     }
 
@@ -2477,9 +2500,9 @@ impl KeystoreDB {
             check_permission(&access.descriptor, access.vector)
                 .context("While checking permission.")?;
 
-            Self::mark_unreferenced(tx, access.key_id)
+            Self::remove_key_rows(tx, access.key_id)
                 .map(|need_gc| (need_gc, ()))
-                .context("Trying to mark the key unreferenced.")
+                .context("Trying to remove key DB rows")
         })
         .context(ks_err!())
     }
@@ -2582,6 +2605,22 @@ impl KeystoreDB {
                 params![KeyLifeCycle::Unreferenced],
             )
             .context("Trying to delete grants.")?;
+
+            if keystore2_flags::remove_rebound_keyblobs_fix() {
+                // Mark as orphaned any blobentry rows that are associated with keyentry rows that
+                // are about to be deleted.  The orphaned rows will be removed in a later GC
+                // operation (which also involves notifying the owning KeyMint of keyblob deletion).
+                tx.execute(
+                    "UPDATE persistent.blobentry SET state=?
+                    WHERE keyentryid IN (
+                      SELECT id FROM persistent.keyentry
+                      WHERE state = ?
+                    );",
+                    params![BlobState::Orphaned, KeyLifeCycle::Unreferenced],
+                )
+                .context("Trying to mark to-be-orphaned blobs")?;
+            }
+
             tx.execute(
                 "DELETE FROM persistent.keyentry
                 WHERE state = ?;",
@@ -2647,8 +2686,8 @@ impl KeystoreDB {
 
             let mut notify_gc = false;
             for key_id in key_ids {
-                notify_gc = Self::mark_unreferenced(tx, key_id)
-                    .context("In unbind_keys_for_user. Failed to mark key id as unreferenced.")?
+                notify_gc = Self::remove_key_rows(tx, key_id)
+                    .context("In unbind_keys_for_user. Failed to remove key rows.")?
                     || notify_gc;
             }
             Ok(()).do_gc(notify_gc)
@@ -2708,13 +2747,13 @@ impl KeystoreDB {
                     matches!(kp.key_parameter_value(), KeyParameterValue::UserSecureID(_))
                 });
                 if is_auth_bound_key {
-                    notify_gc = Self::mark_unreferenced(tx, key_id)
+                    notify_gc = Self::remove_key_rows(tx, key_id)
                         .context("In unbind_auth_bound_keys_for_user.")?
                         || notify_gc;
                     num_unbound += 1;
                 }
             }
-            log::info!("Deleting {num_unbound} auth-bound keys for user {user_id}");
+            info!("Deleting {num_unbound} auth-bound keys for user {user_id}");
             Ok(()).do_gc(notify_gc)
         })
         .context(ks_err!())
@@ -3012,7 +3051,7 @@ impl KeystoreDB {
     pub fn get_app_uids_affected_by_sid(
         &mut self,
         user_id: i32,
-        secure_user_id: i64,
+        sid: SecureUserId,
     ) -> Result<Vec<i64>> {
         let _wp = wd::watch("KeystoreDB::get_app_uids_affected_by_sid");
 
@@ -3058,7 +3097,7 @@ impl KeystoreDB {
                     let is_key_bound_to_sid = params.iter().any(|kp| {
                         matches!(
                             kp.key_parameter_value(),
-                            KeyParameterValue::UserSecureID(sid) if *sid == secure_user_id
+                            KeyParameterValue::UserSecureID(s) if *s == sid.0
                         )
                     });
                     Ok(is_key_bound_to_sid).no_gc()

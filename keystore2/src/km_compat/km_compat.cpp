@@ -23,7 +23,6 @@
 #include <aidl/android/hardware/security/keymint/ErrorCode.h>
 #include <aidl/android/hardware/security/keymint/KeyParameterValue.h>
 #include <aidl/android/hardware/security/keymint/PaddingMode.h>
-#include <aidl/android/system/keystore2/ResponseCode.h>
 #include <android-base/logging.h>
 #include <android/hidl/manager/1.2/IServiceManager.h>
 #include <binder/IServiceManager.h>
@@ -42,7 +41,6 @@ using ::aidl::android::hardware::security::keymint::Digest;
 using ::aidl::android::hardware::security::keymint::KeyParameterValue;
 using ::aidl::android::hardware::security::keymint::PaddingMode;
 using ::aidl::android::hardware::security::keymint::Tag;
-using ::aidl::android::system::keystore2::ResponseCode;
 using ::android::hardware::hidl_vec;
 using ::android::hardware::keymaster::V4_0::TagType;
 using ::android::hidl::manager::V1_2::IServiceManager;

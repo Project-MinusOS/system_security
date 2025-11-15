@@ -22,7 +22,7 @@ use crate::error::{map_km_error, Error};
 use crate::key_parameter::{KeyParameter, KeyParameterValue};
 use crate::ks_err;
 use crate::legacy_blob::{self, Blob, BlobValue, LegacyKeyCharacteristics};
-use crate::super_key::USER_AFTER_FIRST_UNLOCK_SUPER_KEY;
+use crate::super_key::CREDENTIAL_ENCRYPTED_SUPER_KEY;
 use crate::utils::{
     key_characteristics_to_internal, uid_to_android_user, upgrade_keyblob_if_required_with,
     watchdog as wd, AesGcm,
@@ -35,6 +35,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 use anyhow::{Context, Result};
 use core::ops::Deref;
 use keystore2_crypto::{Password, ZVec};
+use log::{error, info};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::channel;
@@ -265,7 +266,7 @@ impl LegacyImporter {
 
             // Send the result to the requester.
             if let Err(e) = sender.send((new_state, result)) {
-                log::error!("In do_serialized. Error in sending the result. {:?}", e);
+                error!("In do_serialized. Error in sending the result: {e:?}");
             }
         });
 
@@ -450,7 +451,7 @@ impl LegacyImporterState {
 
         match self
             .db
-            .load_super_key(&USER_AFTER_FIRST_UNLOCK_SUPER_KEY, user_id)
+            .load_super_key(&CREDENTIAL_ENCRYPTED_SUPER_KEY, user_id)
             .context(ks_err!("Failed to load super key"))?
         {
             Some((_, entry)) => Ok(entry.id()),
@@ -729,7 +730,7 @@ impl LegacyImporterState {
             self.db
                 .store_super_key(
                     user_id,
-                    &USER_AFTER_FIRST_UNLOCK_SUPER_KEY,
+                    &CREDENTIAL_ENCRYPTED_SUPER_KEY,
                     &blob,
                     &blob_metadata,
                     &KeyMetaData::new(),
@@ -772,7 +773,7 @@ impl LegacyImporterState {
 
         let super_key_id = self
             .db
-            .load_super_key(&USER_AFTER_FIRST_UNLOCK_SUPER_KEY, user_id)
+            .load_super_key(&CREDENTIAL_ENCRYPTED_SUPER_KEY, user_id)
             .context(ks_err!("Failed to load super key"))?
             .map(|(_, entry)| entry.id());
 
@@ -807,7 +808,7 @@ impl LegacyImporterState {
                 continue;
             }
             if uid == rustutils::users::AID_SYSTEM && is_de_critical {
-                log::info!("skip deletion of system key '{alias}' which is DE-critical");
+                info!("skip deletion of system key '{alias}' which is DE-critical");
                 continue;
             }
 

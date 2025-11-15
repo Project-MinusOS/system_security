@@ -18,10 +18,12 @@ use crate::ks_err;
 use crate::error::{map_binder_status, Error, ErrorCode};
 use crate::globals::{get_timestamp_service, ASYNC_TASK, DB, ENFORCEMENTS};
 use crate::key_parameter::{KeyParameter, KeyParameterValue};
-use crate::{authorization::Error as AuthzError, super_key::SuperEncryptionType};
 use crate::{
+    authorization::Error as AuthzError, super_key::{SuperEncryptionType},
+    boot_level_keys::BootLevel,
     database::{AuthTokenEntry, BootTime},
     globals::SUPER_KEY,
+    utils::{Challenge, SecureUserId},
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, ErrorCode::ErrorCode as Ec, HardwareAuthToken::HardwareAuthToken,
@@ -37,6 +39,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     OperationChallenge::OperationChallenge,
 };
 use anyhow::{Context, Result};
+use log::{error, info};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -151,7 +154,7 @@ struct TokenReceiverMap {
     /// counter (second field in the tuple) turns 0, the map is cleaned from stale entries.
     /// The cleanup counter is decremented every time a new receiver is added.
     /// and reset to TokenReceiverMap::CLEANUP_PERIOD + 1 after each cleanup.
-    map_and_cleanup_counter: Mutex<(HashMap<i64, TokenReceiver>, u8)>,
+    map_and_cleanup_counter: Mutex<(HashMap<Challenge, TokenReceiver>, u8)>,
 }
 
 impl Default for TokenReceiverMap {
@@ -173,7 +176,7 @@ impl TokenReceiverMap {
             // added.
             let mut map = self.map_and_cleanup_counter.lock().unwrap();
             let (ref mut map, _) = *map;
-            map.remove_entry(&hat.challenge)
+            map.remove_entry(&Challenge(hat.challenge))
         };
 
         if let Some((_, recv)) = recv {
@@ -181,7 +184,7 @@ impl TokenReceiverMap {
         }
     }
 
-    pub fn add_receiver(&self, challenge: i64, recv: TokenReceiver) {
+    pub fn add_receiver(&self, challenge: Challenge, recv: TokenReceiver) {
         let mut map = self.map_and_cleanup_counter.lock().unwrap();
         let (ref mut map, ref mut cleanup_counter) = *map;
         map.insert(challenge, recv);
@@ -210,20 +213,17 @@ impl TokenReceiver {
     }
 }
 
-fn get_timestamp_token(challenge: i64) -> Result<TimeStampToken, Error> {
+fn get_timestamp_token(challenge: Challenge) -> Result<TimeStampToken, Error> {
     let dev = get_timestamp_service().expect(concat!(
         "Secure Clock service must be present ",
         "if TimeStampTokens are required."
     ));
-    map_binder_status(dev.generateTimeStamp(challenge))
+    map_binder_status(dev.generateTimeStamp(challenge.0))
 }
 
-fn timestamp_token_request(challenge: i64, sender: Sender<Result<TimeStampToken, Error>>) {
+fn timestamp_token_request(challenge: Challenge, sender: Sender<Result<TimeStampToken, Error>>) {
     if let Err(e) = sender.send(get_timestamp_token(challenge)) {
-        log::info!(
-            concat!("Receiver hung up ", "before timestamp token could be delivered. {:?}"),
-            e
-        );
+        info!("Receiver hung up before timestamp token could be delivered. {e:?}");
     }
 }
 
@@ -231,7 +231,10 @@ impl AuthInfo {
     /// This function gets called after an operation was successfully created.
     /// It makes all the preparations required, so that the operation has all the authentication
     /// related artifacts to advance on update and finish.
-    pub fn finalize_create_authorization(&mut self, challenge: i64) -> Option<OperationChallenge> {
+    pub fn finalize_create_authorization(
+        &mut self,
+        challenge: Challenge,
+    ) -> Option<OperationChallenge> {
         match &self.state {
             DeferredAuthState::OpAuthRequired => {
                 let auth_request = AuthRequest::op_auth();
@@ -239,7 +242,7 @@ impl AuthInfo {
                 ENFORCEMENTS.register_op_auth_receiver(challenge, token_receiver);
 
                 self.state = DeferredAuthState::Waiting(auth_request);
-                Some(OperationChallenge { challenge })
+                Some(OperationChallenge { challenge: challenge.0 })
             }
             DeferredAuthState::TimeStampRequired(hat) => {
                 let hat = (*hat).clone();
@@ -276,10 +279,9 @@ impl AuthInfo {
                         Ok(t) => confirmation_token = Some(t),
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
-                            log::error!(concat!(
-                                "We got disconnected from the APC service, ",
-                                "this should never happen."
-                            ));
+                            error!(
+                                "We got disconnected from the APC service, this should never happen."
+                            );
                             break;
                         }
                     }
@@ -449,12 +451,12 @@ impl Enforcements {
         let mut no_auth_required: bool = false;
         let mut caller_nonce_allowed = false;
         let mut user_id: i32 = -1;
-        let mut user_secure_ids = Vec::<i64>::new();
+        let mut user_sids = Vec::<SecureUserId>::new();
         let mut key_time_out: Option<i64> = None;
         let mut unlocked_device_required = false;
         let mut key_usage_limited: Option<i64> = None;
         let mut confirmation_token_receiver: Option<Arc<Mutex<Option<Receiver<Vec<u8>>>>>> = None;
-        let mut max_boot_level: Option<i32> = None;
+        let mut max_boot_level: Option<BootLevel> = None;
 
         // iterate through key parameters, recording information we need for authorization
         // enforcements later, or enforcing authorizations in place, where applicable
@@ -499,7 +501,7 @@ impl Enforcements {
                     }
                 }
                 KeyParameterValue::UserSecureID(s) => {
-                    user_secure_ids.push(*s);
+                    user_sids.push(SecureUserId(*s));
                 }
                 KeyParameterValue::UserID(u) => {
                     user_id = *u;
@@ -517,7 +519,7 @@ impl Enforcements {
                     confirmation_token_receiver = Some(self.confirmation_token_receiver.clone());
                 }
                 KeyParameterValue::MaxBootLevel(level) => {
-                    max_boot_level = Some(*level);
+                    max_boot_level = Some(BootLevel(*level as usize));
                 }
                 // NOTE: as per offline discussion, sanitizing key parameters and rejecting
                 // create operation if any non-allowed tags are present, is not done in
@@ -535,19 +537,17 @@ impl Enforcements {
         }
 
         // if both NO_AUTH_REQUIRED and USER_SECURE_ID tags are present, return error
-        if !user_secure_ids.is_empty() && no_auth_required {
+        if !user_sids.is_empty() && no_auth_required {
             return Err(Error::Km(Ec::INVALID_KEY_BLOB))
                 .context(ks_err!("key has both NO_AUTH_REQUIRED and USER_SECURE_ID tags."));
         }
 
         // if either of auth_type or secure_id is present and the other is not present, return error
-        if (user_auth_type.is_some() && user_secure_ids.is_empty())
-            || (user_auth_type.is_none() && !user_secure_ids.is_empty())
+        if (user_auth_type.is_some() && user_sids.is_empty())
+            || (user_auth_type.is_none() && !user_sids.is_empty())
         {
             return Err(Error::Km(Ec::KEY_USER_NOT_AUTHENTICATED)).context(ks_err!(
-                "Auth required, but auth type {:?} + sids {:?} inconsistently specified",
-                user_auth_type,
-                user_secure_ids,
+                "Auth required, but auth type {user_auth_type:?} + {user_sids:?} inconsistently specified"
             ));
         }
 
@@ -575,19 +575,16 @@ impl Enforcements {
             }
         }
 
-        let (hat, state) = if user_secure_ids.is_empty() {
+        let (hat, state) = if user_sids.is_empty() {
             (None, DeferredAuthState::NoAuthRequired)
         } else if let Some(key_time_out) = key_time_out {
             let hat = Self::find_auth_token(|hat: &AuthTokenEntry| match user_auth_type {
-                Some(auth_type) => hat.satisfies(&user_secure_ids, auth_type),
+                Some(auth_type) => hat.satisfies(&user_sids, auth_type),
                 None => false, // not reachable due to earlier check
             })
             .ok_or(Error::Km(Ec::KEY_USER_NOT_AUTHENTICATED))
             .context(ks_err!(
-                "No suitable auth token for sids {:?} type {:?} received in last {}s found.",
-                user_secure_ids,
-                user_auth_type,
-                key_time_out
+                "No suitable auth token for {user_sids:?} type {user_auth_type:?} received in last {key_time_out}s found",
             ))?;
             let now = BootTime::now();
             let token_age =
@@ -608,7 +605,7 @@ impl Enforcements {
                     hat.auth_token().authenticatorType.0,
                     hat.auth_token().timestamp.milliSeconds,
                     hat.time_received(),
-                    user_secure_ids,
+                    user_sids,
                     user_auth_type,
                     token_age.seconds(),
                     key_time_out
@@ -679,7 +676,7 @@ impl Enforcements {
     /// This is to be called by create_operation, once it has received the operation challenge
     /// from keymint for an operation whose authorization decision is OpAuthRequired, as signalled
     /// by the DeferredAuthState.
-    fn register_op_auth_receiver(&self, challenge: i64, recv: TokenReceiver) {
+    fn register_op_auth_receiver(&self, challenge: Challenge, recv: TokenReceiver) {
         self.op_auth_map.add_receiver(challenge, recv);
     }
 
@@ -702,14 +699,15 @@ impl Enforcements {
         let mut result = Candidate { priority: 0, enc_type: SuperEncryptionType::None };
         for kp in key_parameters {
             let t = match kp.key_parameter_value() {
-                KeyParameterValue::MaxBootLevel(level) => {
-                    Candidate { priority: 3, enc_type: SuperEncryptionType::BootLevel(*level) }
-                }
+                KeyParameterValue::MaxBootLevel(level) => Candidate {
+                    priority: 3,
+                    enc_type: SuperEncryptionType::BootLevel(BootLevel(*level as usize)),
+                },
                 KeyParameterValue::UnlockedDeviceRequired if *domain == Domain::APP => {
                     Candidate { priority: 2, enc_type: SuperEncryptionType::UnlockedDeviceRequired }
                 }
                 KeyParameterValue::UserSecureID(_) if *domain == Domain::APP => {
-                    Candidate { priority: 1, enc_type: SuperEncryptionType::AfterFirstUnlock }
+                    Candidate { priority: 1, enc_type: SuperEncryptionType::CredentialEncrypted }
                 }
                 _ => Candidate { priority: 0, enc_type: SuperEncryptionType::None },
             };
@@ -722,21 +720,21 @@ impl Enforcements {
 
     /// Finds a matching auth token along with a timestamp token.
     /// This method looks through auth-tokens cached by keystore which satisfy the given
-    /// authentication information (i.e. |secureUserId|).
-    /// The most recent matching auth token which has a |challenge| field which matches
-    /// the passed-in |challenge| parameter is returned.
-    /// In this case the |authTokenMaxAgeMillis| parameter is not used.
+    /// authentication information (i.e. `SecureUserId`).
+    /// The most recent matching auth token which has a `challenge` field which matches
+    /// the passed-in `challenge` parameter is returned.
+    /// In this case the `auth_token_max_age_millis` parameter is not used.
     ///
-    /// Otherwise, the most recent matching auth token which is younger than |authTokenMaxAgeMillis|
-    /// is returned.
+    /// Otherwise, the most recent matching auth token which is younger than
+    /// `auth_token_max_age_millis` is returned.
     pub fn get_auth_tokens(
         &self,
-        challenge: i64,
-        secure_user_id: i64,
+        challenge: Challenge,
+        sid: SecureUserId,
         auth_token_max_age_millis: i64,
     ) -> Result<(HardwareAuthToken, TimeStampToken)> {
         let auth_type = HardwareAuthenticatorType::ANY;
-        let sids: Vec<i64> = vec![secure_user_id];
+        let sids: Vec<SecureUserId> = vec![sid];
         // Filter the matching auth tokens by challenge
         let result = Self::find_auth_token(|hat: &AuthTokenEntry| {
             (challenge == hat.challenge()) && hat.satisfies(&sids, auth_type)
@@ -751,7 +749,7 @@ impl Enforcements {
                 let result = Self::find_auth_token(|auth_token_entry: &AuthTokenEntry| {
                     let token_valid = now_in_millis
                         .checked_sub(&auth_token_entry.time_received())
-                        .map_or(false, |token_age_in_millis| {
+                        .is_some_and(|token_age_in_millis| {
                             auth_token_max_age_millis > token_age_in_millis.milliseconds()
                         });
                     token_valid && auth_token_entry.satisfies(&sids, auth_type)
@@ -781,13 +779,11 @@ impl Enforcements {
     /// Finds the most recent received time for an auth token that matches the given secure user id and authenticator
     pub fn get_last_auth_time(
         &self,
-        secure_user_id: i64,
+        sid: SecureUserId,
         auth_type: HardwareAuthenticatorType,
     ) -> Option<BootTime> {
-        let sids: Vec<i64> = vec![secure_user_id];
-
         let result =
-            Self::find_auth_token(|entry: &AuthTokenEntry| entry.satisfies(&sids, auth_type));
+            Self::find_auth_token(|entry: &AuthTokenEntry| entry.satisfies(&[sid], auth_type));
 
         result.map(|auth_token_entry| auth_token_entry.time_received())
     }

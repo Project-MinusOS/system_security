@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    boot_level_keys::{get_level_zero_key, BootLevelKeyCache},
+    boot_level_keys::{get_level_zero_key, BootLevel, BootLevelKeyCache},
     database::BlobMetaData,
     database::BlobMetaEntry,
     database::EncryptedBy,
@@ -28,7 +28,7 @@ use crate::{
     ks_err,
     legacy_importer::LegacyImporter,
     raw_device::KeyMintDevice,
-    utils::{watchdog as wd, AesGcm, AID_KEYSTORE},
+    utils::{watchdog as wd, AesGcm, SecureUserId, AID_KEYSTORE},
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, HardwareAuthToken::HardwareAuthToken,
@@ -44,6 +44,7 @@ use keystore2_crypto::{
     aes_gcm_decrypt, aes_gcm_encrypt, generate_aes256_key, generate_salt, Password, ZVec,
     AES_256_KEY_LENGTH,
 };
+use log::{error, info, warn};
 use rustutils::system_properties::PropertyWatcher;
 use std::{
     collections::HashMap,
@@ -55,7 +56,8 @@ use std::{convert::TryFrom, ops::Deref};
 #[cfg(test)]
 mod tests;
 
-const MAX_MAX_BOOT_LEVEL: usize = 1_000_000_000;
+const MAX_MAX_BOOT_LEVEL: BootLevel = BootLevel(1_000_000_000);
+
 /// Allow up to 15 seconds between the user unlocking using a biometric, and the auth
 /// token being used to unlock in [`SuperKeyManager::try_unlock_user_with_biometric`].
 /// This seems short enough for security purposes, while long enough that even the
@@ -63,6 +65,15 @@ const MAX_MAX_BOOT_LEVEL: usize = 1_000_000_000;
 const BIOMETRIC_AUTH_TIMEOUT_S: i32 = 15; // seconds
 
 type UserId = u32;
+
+/// Specify which keys should be wiped given a particular user's UserSuperKeys
+#[derive(PartialEq)]
+pub enum WipeKeyOption {
+    /// Wipe unlocked_device_required_symmetric/private and biometric_unlock keys
+    PlaintextAndBiometric,
+    /// Wipe only unlocked_device_required_symmetric/private keys
+    PlaintextOnly,
+}
 
 /// Encryption algorithm used by a particular type of superencryption key
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,13 +96,14 @@ pub struct SuperKeyType<'a> {
     pub name: &'a str,
 }
 
-/// The user's AfterFirstUnlock super key. This super key is loaded into memory when the user first
-/// unlocks the device, and it remains in memory until the device reboots. This is used to encrypt
+/// The user's CredentialEncrypted super key. This super key is loaded into memory when the user's
+/// credential encrypted storage is unlocked. It remains in memory until the user's credential
+/// encrypted storage is locked, through a device reboot or user logout. This is used to encrypt
 /// keys that require user authentication but not an unlocked device.
-pub const USER_AFTER_FIRST_UNLOCK_SUPER_KEY: SuperKeyType = SuperKeyType {
+pub const CREDENTIAL_ENCRYPTED_SUPER_KEY: SuperKeyType = SuperKeyType {
     alias: "USER_SUPER_KEY",
     algorithm: SuperEncryptionAlgorithm::Aes256Gcm,
-    name: "AfterFirstUnlock super key",
+    name: "CredentialEncrypted super key",
 };
 
 /// The user's UnlockedDeviceRequired symmetric super key. This super key is loaded into memory each
@@ -117,12 +129,12 @@ pub const USER_UNLOCKED_DEVICE_REQUIRED_P521_SUPER_KEY: SuperKeyType = SuperKeyT
 pub enum SuperEncryptionType {
     /// Do not superencrypt this key.
     None,
-    /// Superencrypt with the AfterFirstUnlock super key.
-    AfterFirstUnlock,
+    /// Superencrypt with the CredentialEncrypted super key.
+    CredentialEncrypted,
     /// Superencrypt with an UnlockedDeviceRequired super key.
     UnlockedDeviceRequired,
     /// Superencrypt with a key based on the desired boot level
-    BootLevel(i32),
+    BootLevel(BootLevel),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -130,7 +142,7 @@ pub enum SuperKeyIdentifier {
     /// id of the super key in the database.
     DatabaseId(i64),
     /// Boot level of the encrypting boot level key
-    BootLevel(i32),
+    BootLevel(BootLevel),
 }
 
 impl SuperKeyIdentifier {
@@ -138,7 +150,9 @@ impl SuperKeyIdentifier {
         if let Some(EncryptedBy::KeyId(key_id)) = metadata.encrypted_by() {
             Some(SuperKeyIdentifier::DatabaseId(*key_id))
         } else {
-            metadata.max_boot_level().map(|boot_level| SuperKeyIdentifier::BootLevel(*boot_level))
+            metadata
+                .max_boot_level()
+                .map(|boot_level| SuperKeyIdentifier::BootLevel(BootLevel(*boot_level as usize)))
         }
     }
 
@@ -148,7 +162,7 @@ impl SuperKeyIdentifier {
                 metadata.add(BlobMetaEntry::EncryptedBy(EncryptedBy::KeyId(*id)));
             }
             SuperKeyIdentifier::BootLevel(level) => {
-                metadata.add(BlobMetaEntry::MaxBootLevel(*level));
+                metadata.add(BlobMetaEntry::MaxBootLevel(level.0 as i32));
             }
         }
     }
@@ -241,7 +255,7 @@ impl LockedKey {
 /// information about that biometric-bound key.
 struct BiometricUnlock {
     /// List of auth token SIDs that are accepted by the encrypting biometric-bound key.
-    sids: Vec<i64>,
+    sids: Vec<SecureUserId>,
     /// Key descriptor of the encrypting biometric-bound key.
     key_desc: KeyDescriptor,
     /// The UnlockedDeviceRequired super keys, encrypted with a biometric-bound key.
@@ -251,14 +265,15 @@ struct BiometricUnlock {
 
 #[derive(Default)]
 struct UserSuperKeys {
-    /// The AfterFirstUnlock super key is used for synthetic password binding of authentication
+    /// The CredentialEncrypted super key is used for synthetic password binding of authentication
     /// bound keys. There is one key per android user. The key is stored on flash encrypted with a
     /// key derived from a secret, that is itself derived from the user's synthetic password. (In
     /// most cases, the user's synthetic password can, in turn, only be decrypted using the user's
-    /// Lock Screen Knowledge Factor or LSKF.) When the user unlocks the device for the first time,
-    /// this key is unlocked, i.e., decrypted, and stays memory resident until the device reboots.
-    after_first_unlock: Option<Arc<SuperKey>>,
-    /// The UnlockedDeviceRequired symmetric super key works like the AfterFirstUnlock super key
+    /// Lock Screen Knowledge Factor or LSKF.) When the user logs into the device this key is
+    /// unlocked, i.e., decrypted, and stays memory resident until the user logs out or the device
+    /// reboots.
+    credential_encrypted: Option<Arc<SuperKey>>,
+    /// The UnlockedDeviceRequired symmetric super key works like the CredentialEncrypted super key
     /// with the distinction that it is cleared from memory when the device is locked.
     unlocked_device_required_symmetric: Option<Arc<SuperKey>>,
     /// When the device is locked, keys that use the UnlockedDeviceRequired key parameter can still
@@ -295,18 +310,18 @@ impl SuperKeyManager {
     pub fn set_up_boot_level_cache(skm: &Arc<RwLock<Self>>, db: &mut KeystoreDB) -> Result<()> {
         let mut skm_guard = skm.write().unwrap();
         if skm_guard.data.boot_level_key_cache.is_some() {
-            log::info!("In set_up_boot_level_cache: called for a second time");
+            info!("In set_up_boot_level_cache: called for a second time");
             return Ok(());
         }
         let level_zero_key =
             get_level_zero_key(db).context(ks_err!("get_level_zero_key failed"))?;
         skm_guard.data.boot_level_key_cache =
             Some(Mutex::new(BootLevelKeyCache::new(level_zero_key)));
-        log::info!("Starting boot level watcher.");
+        info!("Starting boot level watcher.");
         let clone = skm.clone();
         std::thread::spawn(move || {
             Self::watch_boot_level(clone)
-                .unwrap_or_else(|e| log::error!("watch_boot_level failed:\n{:?}", e));
+                .unwrap_or_else(|e| error!("watch_boot_level failed: {e:?}"));
         });
         Ok(())
     }
@@ -318,7 +333,7 @@ impl SuperKeyManager {
             .context(ks_err!("PropertyWatcher::new failed"))?;
         loop {
             let level = w
-                .read(|_n, v| v.parse::<usize>().map_err(std::convert::Into::into))
+                .read(|_n, v| v.parse::<usize>().map_err(std::convert::Into::into).map(BootLevel))
                 .context(ks_err!("read of property failed"))?;
 
             // This scope limits the skm_guard life, so we don't hold the skm_guard while
@@ -334,15 +349,13 @@ impl SuperKeyManager {
                     .get_mut()
                     .unwrap();
                 if level < MAX_MAX_BOOT_LEVEL {
-                    log::info!("Read keystore.boot_level value {}", level);
+                    info!("Read keystore.boot_level value {level:?}");
                     boot_level_key_cache
                         .advance_boot_level(level)
                         .context(ks_err!("advance_boot_level failed"))?;
                 } else {
-                    log::info!(
-                        "keystore.boot_level {} hits maximum {}, finishing.",
-                        level,
-                        MAX_MAX_BOOT_LEVEL
+                    info!(
+                        "keystore.boot_level {level:?} hits maximum {MAX_MAX_BOOT_LEVEL:?}, finishing.",
                     );
                     boot_level_key_cache.finish();
                     break;
@@ -353,18 +366,18 @@ impl SuperKeyManager {
         Ok(())
     }
 
-    pub fn level_accessible(&self, boot_level: i32) -> bool {
+    pub fn level_accessible(&self, boot_level: BootLevel) -> bool {
         self.data
             .boot_level_key_cache
             .as_ref()
-            .map_or(false, |c| c.lock().unwrap().level_accessible(boot_level as usize))
+            .is_some_and(|c| c.lock().unwrap().level_accessible(boot_level))
     }
 
     pub fn forget_all_keys_for_user(&mut self, user: UserId) {
         self.data.user_keys.remove(&user);
     }
 
-    fn install_after_first_unlock_key_for_user(
+    fn install_credential_encrypted_key_for_user(
         &mut self,
         user: UserId,
         super_key: Arc<SuperKey>,
@@ -372,7 +385,7 @@ impl SuperKeyManager {
         self.data
             .add_key_to_key_index(&super_key)
             .context(ks_err!("add_key_to_key_index failed"))?;
-        self.data.user_keys.entry(user).or_default().after_first_unlock = Some(super_key);
+        self.data.user_keys.entry(user).or_default().credential_encrypted = Some(super_key);
         Ok(())
     }
 
@@ -385,7 +398,7 @@ impl SuperKeyManager {
                 .data
                 .boot_level_key_cache
                 .as_ref()
-                .map(|b| b.lock().unwrap().aes_key(*level as usize))
+                .map(|b| b.lock().unwrap().aes_key(*level))
                 .transpose()
                 .context(ks_err!("aes_key failed"))?
                 .flatten()
@@ -400,21 +413,21 @@ impl SuperKeyManager {
         })
     }
 
-    /// Returns the AfterFirstUnlock superencryption key for the given user ID, or None if the user
-    /// has not yet unlocked the device since boot.
-    pub fn get_after_first_unlock_key_by_user_id(
+    /// Returns the CredentialEncrypted superencryption key for the given user ID, or None if the
+    /// user has not yet unlocked the device since boot.
+    pub fn get_credential_encrypted_key_by_user_id(
         &self,
         user_id: UserId,
     ) -> Option<Arc<dyn AesGcm + Send + Sync>> {
-        self.get_after_first_unlock_key_by_user_id_internal(user_id)
+        self.get_credential_encrypted_key_by_user_id_internal(user_id)
             .map(|sk| -> Arc<dyn AesGcm + Send + Sync> { sk })
     }
 
-    fn get_after_first_unlock_key_by_user_id_internal(
+    fn get_credential_encrypted_key_by_user_id_internal(
         &self,
         user_id: UserId,
     ) -> Option<Arc<SuperKey>> {
-        self.data.user_keys.get(&user_id).and_then(|e| e.after_first_unlock.as_ref().cloned())
+        self.data.user_keys.get(&user_id).and_then(|e| e.credential_encrypted.as_ref().cloned())
     }
 
     /// Check if a given key is super-encrypted, from its metadata. If so, unwrap the key using
@@ -478,7 +491,7 @@ impl SuperKeyManager {
         }
     }
 
-    /// Checks if the user's AfterFirstUnlock super key exists in the database (or legacy database).
+    /// Checks if the user's CredentialEncrypted super key exists in the database (or legacy database).
     /// The reference to self is unused but it is required to prevent calling this function
     /// concurrently with skm state database changes.
     fn super_key_exists_in_db_for_user(
@@ -491,7 +504,7 @@ impl SuperKeyManager {
             .key_exists(
                 Domain::APP,
                 user_id as u64 as i64,
-                USER_AFTER_FIRST_UNLOCK_SUPER_KEY.alias,
+                CREDENTIAL_ENCRYPTED_SUPER_KEY.alias,
                 KeyType::Super,
             )
             .context(ks_err!())?;
@@ -513,8 +526,8 @@ impl SuperKeyManager {
     ) -> Result<Arc<SuperKey>> {
         let super_key = Self::extract_super_key_from_key_entry(algorithm, entry, pw, None)
             .context(ks_err!("Failed to extract super key from key entry"))?;
-        self.install_after_first_unlock_key_for_user(user_id, super_key.clone())
-            .context(ks_err!("Failed to install AfterFirstUnlock super key for user!"))?;
+        self.install_credential_encrypted_key_for_user(user_id, super_key.clone())
+            .context(ks_err!("Failed to install CredentialEncrypted super key for user!"))?;
         Ok(super_key)
     }
 
@@ -672,20 +685,20 @@ impl SuperKeyManager {
     ) -> Result<(Vec<u8>, BlobMetaData)> {
         match Enforcements::super_encryption_required(domain, key_parameters, flags) {
             SuperEncryptionType::None => Ok((key_blob.to_vec(), BlobMetaData::new())),
-            SuperEncryptionType::AfterFirstUnlock => {
-                // Encrypt the given key blob with the user's AfterFirstUnlock super key. If the
-                // user has not unlocked the device since boot or the super keys were never
-                // initialized for the user for some reason, an error is returned.
+            SuperEncryptionType::CredentialEncrypted => {
+                // Encrypt the given key blob with the user's CredentialEncrypted super key. If the
+                // user has not logged in or the super keys were never initialized for the user for
+                // some reason, an error is returned.
                 match self
                     .get_user_state(db, legacy_importer, user_id)
                     .context(ks_err!("Failed to get user state for user {user_id}"))?
                 {
-                    UserState::AfterFirstUnlock(super_key) => {
+                    UserState::CeUnlocked(super_key) => {
                         Self::encrypt_with_aes_super_key(key_blob, &super_key).context(ks_err!(
-                            "Failed to encrypt with AfterFirstUnlock super key for user {user_id}"
-                        ))
+                        "Failed to encrypt with CredentialEncrypted super key for user {user_id}"
+                    ))
                     }
-                    UserState::BeforeFirstUnlock => {
+                    UserState::CeLocked => {
                         Err(Error::Rc(ResponseCode::LOCKED)).context(ks_err!("Device is locked."))
                     }
                     UserState::Uninitialized => Err(Error::Rc(ResponseCode::UNINITIALIZED))
@@ -747,7 +760,7 @@ impl SuperKeyManager {
         password: &Password,
         reencrypt_with: Option<Arc<SuperKey>>,
     ) -> Result<Arc<SuperKey>> {
-        log::info!("Creating {} for user {}", key_type.name, user_id);
+        info!("Creating {} for user {user_id}", key_type.name);
         let (super_key, public_key) = match key_type.algorithm {
             SuperEncryptionAlgorithm::Aes256Gcm => {
                 (generate_aes256_key().context(ks_err!("Failed to generate AES-256 key."))?, None)
@@ -873,7 +886,7 @@ impl SuperKeyManager {
         &mut self,
         db: &mut KeystoreDB,
         user_id: UserId,
-        unlocking_sids: &[i64],
+        unlocking_sids: &[SecureUserId],
         weak_unlock_enabled: bool,
     ) {
         let entry = self.data.user_keys.entry(user_id).or_default();
@@ -907,7 +920,7 @@ impl SuperKeyManager {
                     ),
                 ];
                 for sid in unlocking_sids {
-                    key_params.push(KeyParameterValue::UserSecureID(*sid));
+                    key_params.push(KeyParameterValue::UserSecureID(sid.0));
                 }
                 let key_params: Vec<KmKeyParameter> =
                     key_params.into_iter().map(|x| x.into()).collect();
@@ -930,31 +943,38 @@ impl SuperKeyManager {
                 Ok(())
             })();
             if let Err(e) = res {
-                log::error!("Error setting up biometric unlock: {:#?}", e);
+                error!("Error setting up biometric unlock: {e:#?}");
                 // The caller can't do anything about the error, and for security reasons we still
                 // wipe the keys (unless a weak unlock method is enabled).  So just log the error.
             }
         }
         // Wipe the plaintext copy of the keys, unless a weak unlock method is enabled.
-        if !weak_unlock_enabled {
-            entry.unlocked_device_required_symmetric = None;
-            entry.unlocked_device_required_private = None;
+        if weak_unlock_enabled {
+            Self::log_status_of_unlocked_device_required_keys(user_id, entry);
+        } else {
+            Self::wipe_unlocked_device_required_keys_internal(
+                user_id,
+                entry,
+                WipeKeyOption::PlaintextOnly,
+            )
         }
-        Self::log_status_of_unlocked_device_required_keys(user_id, entry);
     }
 
-    pub fn wipe_plaintext_unlocked_device_required_keys(&mut self, user_id: UserId) {
+    pub fn wipe_unlocked_device_required_keys(&mut self, user_id: UserId, wipe_key: WipeKeyOption) {
         let entry = self.data.user_keys.entry(user_id).or_default();
-        entry.unlocked_device_required_symmetric = None;
-        entry.unlocked_device_required_private = None;
-        Self::log_status_of_unlocked_device_required_keys(user_id, entry);
+        Self::wipe_unlocked_device_required_keys_internal(user_id, entry, wipe_key);
     }
 
-    pub fn wipe_all_unlocked_device_required_keys(&mut self, user_id: UserId) {
-        let entry = self.data.user_keys.entry(user_id).or_default();
+    fn wipe_unlocked_device_required_keys_internal(
+        user_id: UserId,
+        entry: &mut UserSuperKeys,
+        wipe_key: WipeKeyOption,
+    ) {
         entry.unlocked_device_required_symmetric = None;
         entry.unlocked_device_required_private = None;
-        entry.biometric_unlock = None;
+        if wipe_key == WipeKeyOption::PlaintextAndBiometric {
+            entry.biometric_unlock = None;
+        }
         Self::log_status_of_unlocked_device_required_keys(user_id, entry);
     }
 
@@ -970,7 +990,7 @@ impl SuperKeyManager {
             (true, false) => "retained in plaintext",
             (true, true) => "retained in plaintext, with biometric-encrypted copy too",
         };
-        log::info!("UnlockedDeviceRequired super keys for user {user_id} are {status}.");
+        info!("UnlockedDeviceRequired super keys for user {user_id} are {status}.");
     }
 
     /// User has unlocked, not using a password. See if any of our stored auth tokens can be used
@@ -1006,7 +1026,8 @@ impl SuperKeyManager {
             for sid in &biometric.sids {
                 let sid = *sid;
                 if let Some(auth_token_entry) = db.find_auth_token_entry(|entry| {
-                    entry.auth_token().userId == sid || entry.auth_token().authenticatorId == sid
+                    entry.auth_token().userId == sid.0
+                        || entry.auth_token().authenticatorId == sid.0
                 }) {
                     let res: Result<(Arc<SuperKey>, Arc<SuperKey>)> = (|| {
                         let symmetric = biometric.symmetric.decrypt(
@@ -1033,7 +1054,7 @@ impl SuperKeyManager {
                             entry.unlocked_device_required_private = Some(private.clone());
                             self.data.add_key_to_key_index(&symmetric)?;
                             self.data.add_key_to_key_index(&private)?;
-                            log::info!("Successfully unlocked user {user_id} with biometric {sid}",);
+                            info!("Successfully unlocked user {user_id} with biometric {sid:?}");
                             return Ok(());
                         }
                         Err(e) => {
@@ -1044,9 +1065,9 @@ impl SuperKeyManager {
                 }
             }
             if !errs.is_empty() {
-                log::warn!("biometric unlock failed for all SIDs, with errors:");
+                warn!("biometric unlock failed for all SIDs, with errors:");
                 for (sid, err) in errs {
-                    log::warn!("  biometric {sid}: {err}");
+                    warn!("  biometric {sid:?}: {err}");
                 }
             }
         }
@@ -1062,8 +1083,8 @@ impl SuperKeyManager {
         legacy_importer: &LegacyImporter,
         user_id: UserId,
     ) -> Result<UserState> {
-        match self.get_after_first_unlock_key_by_user_id_internal(user_id) {
-            Some(super_key) => Ok(UserState::AfterFirstUnlock(super_key)),
+        match self.get_credential_encrypted_key_by_user_id_internal(user_id) {
+            Some(super_key) => Ok(UserState::CeUnlocked(super_key)),
             None => {
                 // Check if a super key exists in the database or legacy database.
                 // If so, return locked user state.
@@ -1071,7 +1092,7 @@ impl SuperKeyManager {
                     .super_key_exists_in_db_for_user(db, legacy_importer, user_id)
                     .context(ks_err!())?
                 {
-                    Ok(UserState::BeforeFirstUnlock)
+                    Ok(UserState::CeLocked)
                 } else {
                     Ok(UserState::Uninitialized)
                 }
@@ -1087,7 +1108,7 @@ impl SuperKeyManager {
         legacy_importer: &LegacyImporter,
         user_id: UserId,
     ) -> Result<()> {
-        log::info!("remove_user(user={user_id})");
+        info!("remove_user(user={user_id})");
         // Mark keys created on behalf of the user as unreferenced.
         legacy_importer
             .bulk_delete_user(user_id, false)
@@ -1099,7 +1120,7 @@ impl SuperKeyManager {
         Ok(())
     }
 
-    /// Initializes the given user by creating their super keys, both AfterFirstUnlock and
+    /// Initializes the given user by creating their super keys, both CredentialEncrypted and
     /// UnlockedDeviceRequired. If allow_existing is true, then the user already being initialized
     /// is not considered an error.
     pub fn initialize_user(
@@ -1110,19 +1131,19 @@ impl SuperKeyManager {
         password: &Password,
         allow_existing: bool,
     ) -> Result<()> {
-        // Create the AfterFirstUnlock super key.
+        // Create the CredentialEncrypted super key.
         if self.super_key_exists_in_db_for_user(db, legacy_importer, user_id)? {
-            log::info!("AfterFirstUnlock super key already exists");
+            info!("CredentialEncrypted super key already exists");
             if !allow_existing {
                 return Err(Error::sys()).context(ks_err!("Tried to re-init an initialized user!"));
             }
         } else {
             let super_key = self
-                .create_super_key(db, user_id, &USER_AFTER_FIRST_UNLOCK_SUPER_KEY, password, None)
-                .context(ks_err!("Failed to create AfterFirstUnlock super key"))?;
+                .create_super_key(db, user_id, &CREDENTIAL_ENCRYPTED_SUPER_KEY, password, None)
+                .context(ks_err!("Failed to create CredentialEncrypted super key"))?;
 
-            self.install_after_first_unlock_key_for_user(user_id, super_key)
-                .context(ks_err!("Failed to install AfterFirstUnlock super key for user"))?;
+            self.install_credential_encrypted_key_for_user(user_id, super_key)
+                .context(ks_err!("Failed to install CredentialEncrypted super key for user"))?;
         }
 
         // Create the UnlockedDeviceRequired super keys.
@@ -1132,11 +1153,11 @@ impl SuperKeyManager {
 
     /// Unlocks the given user with the given password.
     ///
-    /// If the user state is BeforeFirstUnlock:
-    /// - Unlock the user's AfterFirstUnlock super key
+    /// If the user state is CeLocked:
+    /// - Unlock the user's CredentialEncrypted super key
     /// - Unlock the user's UnlockedDeviceRequired super keys
     ///
-    /// If the user state is AfterFirstUnlock:
+    /// If the user state is CeUnlocked:
     /// - Unlock the user's UnlockedDeviceRequired super keys only
     ///
     pub fn unlock_user(
@@ -1146,16 +1167,16 @@ impl SuperKeyManager {
         user_id: UserId,
         password: &Password,
     ) -> Result<()> {
-        log::info!("unlock_user(user={user_id})");
+        info!("unlock_user(user={user_id})");
         match self.get_user_state(db, legacy_importer, user_id)? {
-            UserState::AfterFirstUnlock(_) => {
+            UserState::CeUnlocked(_) => {
                 self.unlock_unlocked_device_required_keys(db, user_id, password)
             }
             UserState::Uninitialized => {
                 Err(Error::sys()).context(ks_err!("Tried to unlock an uninitialized user!"))
             }
-            UserState::BeforeFirstUnlock => {
-                let alias = &USER_AFTER_FIRST_UNLOCK_SUPER_KEY;
+            UserState::CeLocked => {
+                let alias = &CREDENTIAL_ENCRYPTED_SUPER_KEY;
                 let result = legacy_importer
                     .with_try_import_super_key(user_id, password, || {
                         db.load_super_key(alias, user_id)
@@ -1185,13 +1206,13 @@ impl SuperKeyManager {
 /// This enum represents different states of the user's life cycle in the device.
 /// For now, only three states are defined. More states may be added later.
 pub enum UserState {
-    // The user's super keys exist, and the user has unlocked the device at least once since boot.
-    // Hence, the AfterFirstUnlock super key is available in the cache.
-    AfterFirstUnlock(Arc<SuperKey>),
-    // The user's super keys exist, but the user hasn't unlocked the device at least once since
-    // boot. Hence, the AfterFirstUnlock and UnlockedDeviceRequired super keys are not available in
+    // The user's super keys exist, and the user is running and their CE storage is unlocked.
+    // Hence, the CredentialEncrypted super key is available in the cache.
+    CeUnlocked(Arc<SuperKey>),
+    // The user's super keys exist, but the user is not running and their CE storage is locked.
+    // Hence, the CredentialEncrypted and UnlockedDeviceRequired super keys are not available in
     // the cache. However, they exist in the database in encrypted form.
-    BeforeFirstUnlock,
+    CeLocked,
     // The user's super keys don't exist. I.e., there's no user with the given user ID, or the user
     // is in the process of being created or destroyed.
     Uninitialized,

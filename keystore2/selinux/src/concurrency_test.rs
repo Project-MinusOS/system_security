@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use keystore2_selinux::{check_access, Context};
+use log::info;
 use nix::sched::sched_setaffinity;
 use nix::sched::CpuSet;
 use nix::unistd::getpid;
@@ -78,7 +79,7 @@ fn test_concurrent_check_access() {
     let mut threads: Vec<thread::JoinHandle<()>> = Vec::new();
 
     for i in 0..cpus {
-        log::info!("Spawning thread {}", i);
+        info!("Spawning thread {}", i);
         let turnpike_clone = turnpike.clone();
         let complete_count_clone = complete_count.clone();
         threads.push(thread::spawn(move || {
@@ -87,7 +88,7 @@ fn test_concurrent_check_access() {
             sched_setaffinity(getpid(), &cpu_set).unwrap();
             let mut cat_count: CatCount = Default::default();
 
-            log::info!("Thread 0 reached turnpike");
+            info!("Thread 0 reached turnpike");
             loop {
                 turnpike_clone.fetch_add(1, Ordering::Relaxed);
                 loop {

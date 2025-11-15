@@ -35,7 +35,7 @@ use crate::utils::{
     check_device_attestation_permissions, check_key_permission,
     check_unique_id_attestation_permissions, is_device_id_attestation_tag,
     key_characteristics_to_internal, log_security_safe_params, uid_to_android_user, watchdog as wd,
-    UNDEFINED_NOT_AFTER,
+    Challenge, UNDEFINED_NOT_AFTER,
 };
 use crate::{
     database::{
@@ -64,6 +64,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     KeyMetadata::KeyMetadata, KeyParameters::KeyParameters, ResponseCode::ResponseCode,
 };
 use anyhow::{anyhow, Context, Result};
+use log::error;
 use postprocessor_client::process_certificate_chain;
 use rkpd_client::store_rkpd_attestation_key;
 use rustutils::system_properties::read_bool;
@@ -265,7 +266,7 @@ impl KeystoreSecurityLevel {
                 let super_key = SUPER_KEY
                     .read()
                     .unwrap()
-                    .get_after_first_unlock_key_by_user_id(uid_to_android_user(caller_uid));
+                    .get_credential_encrypted_key_by_user_id(uid_to_android_user(caller_uid));
                 let (key_id_guard, mut key_entry) = DB
                     .with::<_, Result<(KeyIdGuard, KeyEntry)>>(|db| {
                         LEGACY_IMPORTER.with_try_import(key, caller_uid, super_key, || {
@@ -362,7 +363,7 @@ impl KeystoreSecurityLevel {
                                 {
                                     log_key_integrity_violation(&key);
                                 } else {
-                                    log::error!("Failed to load key descriptor for audit log");
+                                    error!("Failed to load key descriptor for audit log");
                                 }
                             }
                             return v;
@@ -373,7 +374,8 @@ impl KeystoreSecurityLevel {
             )
             .context(ks_err!("Failed to begin operation."))?;
 
-        let operation_challenge = auth_info.finalize_create_authorization(begin_result.challenge);
+        let operation_challenge =
+            auth_info.finalize_create_authorization(Challenge(begin_result.challenge));
 
         let op_params: Vec<KeyParameter> = operation_parameters.to_vec();
 
@@ -790,7 +792,7 @@ impl KeystoreSecurityLevel {
         // Import_wrapped_key requires the rebind permission for the new key.
         check_key_permission(KeyPerm::Rebind, &key, &None).context(ks_err!())?;
 
-        let super_key = SUPER_KEY.read().unwrap().get_after_first_unlock_key_by_user_id(user_id);
+        let super_key = SUPER_KEY.read().unwrap().get_credential_encrypted_key_by_user_id(user_id);
 
         let (wrapping_key_id_guard, mut wrapping_key_entry) = DB
             .with(|db| {

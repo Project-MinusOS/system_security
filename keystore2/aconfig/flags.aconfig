@@ -34,17 +34,28 @@ flag {
 }
 
 flag {
-  name: "use_blob_state_column"
-  namespace: "hardware_backed_security"
-  description: "Use state database column to track superseded blobentry rows"
-  bug: "319563050"
-  is_fixed_read_only: true
-}
-
-flag {
   name: "attest_modules"
   namespace: "hardware_backed_security"
   description: "Support attestation of modules"
   bug: "369375199"
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "count_keys_per_uid"
+  namespace: "hardware_backed_security"
+  description: "Track counts of keys per-uid"
+  bug: "395078130"
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "remove_rebound_keyblobs_fix"
+  namespace: "hardware_backed_security"
+  description: "Garbage collect keyblobs associated with keys that have been rebound"
+  bug: "416190842"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
   is_fixed_read_only: true
 }
