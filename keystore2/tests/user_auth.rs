@@ -41,8 +41,8 @@ use android_hardware_security_secureclock::aidl::android::hardware::security::se
 };
 use anyhow::Context;
 use keystore2_test_utils::{
-    authorizations::AuthSetBuilder, expect, get_keystore_service, run_as,
-    run_as::{ChannelReader, ChannelWriter}, expect_km_error,
+    SecLevel, authorizations::AuthSetBuilder, expect, get_keystore_service, run_as,
+    run_as::{ChannelReader, ChannelWriter}, expect_km_error
 };
 use log::{warn, info};
 use rustutils::android::users::AID_USER_OFFSET;
@@ -181,7 +181,7 @@ fn test_mldsa_auth_bound_timeout_with_gk() {
         .purpose(KeyPurpose::VERIFY)
         .digest(Digest::NONE)
         .mldsa_variant(MlDsaVariant::ML_DSA_65);
-    test_auth_bound_timeout_with_gk(base_params, Digest::NONE)
+    test_auth_bound_timeout_with_gk(base_params, Digest::NONE, /* min_version = */ 5)
 }
 
 #[test]
@@ -193,10 +193,10 @@ fn test_ec_auth_bound_timeout_with_gk() {
         .purpose(KeyPurpose::VERIFY)
         .digest(Digest::SHA_2_256)
         .ec_curve(EcCurve::P_256);
-    test_auth_bound_timeout_with_gk(base_params, Digest::SHA_2_256)
+    test_auth_bound_timeout_with_gk(base_params, Digest::SHA_2_256, -1)
 }
 
-fn test_auth_bound_timeout_with_gk(base_params: AuthSetBuilder, digest: Digest) {
+fn test_auth_bound_timeout_with_gk(base_params: AuthSetBuilder, digest: Digest, min_version: i32) {
     let bio_fake_sid1 = BIO_FAKE_SID_BASE + 1;
     let bio_fake_sid2 = BIO_FAKE_SID_BASE + 2;
     type Barrier = BarrierReachedWithData<Option<i64>>;
@@ -286,8 +286,17 @@ fn test_auth_bound_timeout_with_gk(base_params: AuthSetBuilder, digest: Digest) 
     }
     .unwrap();
 
-    // Now that the separate process has been forked off, it's safe to use binder to setup a test
-    // user.
+    // Now that the separate process has been forked off, it's safe to use binder
+
+    let sl = SecLevel::tee();
+    if sl.get_keymint_version() < min_version {
+        // Can't run this test as the KeyMint device isn't recent enough.
+        child_handle.send(&Barrier::new(None));
+        assert_eq!(child_handle.get_result(), Ok(()), "child process failed");
+        return;
+    }
+
+    // Setup a test/ user.
     let _ks2 = get_keystore_service();
     let user = TestUser::new();
     if user.gk.is_none() {
@@ -458,7 +467,7 @@ fn test_mldsa_auth_bound_per_op_with_gk() {
         .purpose(KeyPurpose::VERIFY)
         .digest(Digest::NONE)
         .mldsa_variant(MlDsaVariant::ML_DSA_65);
-    test_auth_bound_per_op_with_gk(base_params, Digest::NONE)
+    test_auth_bound_per_op_with_gk(base_params, Digest::NONE, /* min_version= */ 5)
 }
 
 #[test]
@@ -470,10 +479,10 @@ fn test_ec_auth_bound_per_op_with_gk() {
         .purpose(KeyPurpose::VERIFY)
         .digest(Digest::SHA_2_256)
         .ec_curve(EcCurve::P_256);
-    test_auth_bound_per_op_with_gk(base_params, Digest::SHA_2_256)
+    test_auth_bound_per_op_with_gk(base_params, Digest::SHA_2_256, -1)
 }
 
-fn test_auth_bound_per_op_with_gk(base_params: AuthSetBuilder, digest: Digest) {
+fn test_auth_bound_per_op_with_gk(base_params: AuthSetBuilder, digest: Digest, min_version: i32) {
     let bio_fake_sid1 = BIO_FAKE_SID_BASE + 5;
     let bio_fake_sid2 = BIO_FAKE_SID_BASE + 6;
     type Barrier = BarrierReachedWithData<Option<i64>>;
@@ -562,8 +571,16 @@ fn test_auth_bound_per_op_with_gk(base_params: AuthSetBuilder, digest: Digest) {
     }
     .unwrap();
 
-    // Now that the separate process has been forked off, it's safe to use binder to setup a test
-    // user.
+    // Now that the separate process has been forked off, it's safe to use binder.
+    let sl = SecLevel::tee();
+    if sl.get_keymint_version() < min_version {
+        // Can't run this test as the KeyMint device isn't recent enough.
+        child_handle.send(&Barrier::new(None));
+        assert_eq!(child_handle.get_result(), Ok(()), "child process failed");
+        return;
+    }
+
+    // Setup a test user.
     let _ks2 = get_keystore_service();
     let user = TestUser::new();
     if user.gk.is_none() {
