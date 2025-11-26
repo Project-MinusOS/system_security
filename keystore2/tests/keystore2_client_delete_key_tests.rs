@@ -101,7 +101,7 @@ fn keystore2_delete_key_blob_success() {
     .unwrap();
 
     let result = sl.delete_key(&key_metadata.key);
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
 }
 
 /// Try to delete a key with `Domain::BLOB` without providing key-blob. Test should fail to delete a

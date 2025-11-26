@@ -163,7 +163,8 @@ fn perform_crypto_op_using_granted_key(
     grant_key_nspace: i64,
 ) {
     // Load the granted key from Keystore2-Engine API and perform crypto operations.
-    assert!(perform_crypto_op_using_keystore_engine(grant_key_nspace).is_ok());
+    let result = perform_crypto_op_using_keystore_engine(grant_key_nspace);
+    assert!(result.is_ok(), "unexpected failure {result:?}");
 
     // Delete the granted key.
     keystore2

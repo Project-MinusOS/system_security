@@ -259,10 +259,10 @@ fn test_auth_bound_timeout_with_gk(base_params: AuthSetBuilder, digest: Digest, 
         reader.recv();
 
         let result = sec_level.createOperation(&key, &params, UNFORCED);
-        expect!(result.is_ok());
+        expect!(result.is_ok(), "unexpected failure {result:?}");
         let op = result.unwrap().iOperation.context("no operation in result")?;
         let result = op.finish(Some(b"data"), None);
-        expect!(result.is_ok());
+        expect!(result.is_ok(), "unexpected failure {result:?}");
         info!("B: performed auth-bound operation (with valid GK HAT) as expected");
 
         writer.send(&Barrier::new(None)); // B done.
@@ -556,7 +556,7 @@ fn test_auth_bound_per_op_with_gk(base_params: AuthSetBuilder, digest: Digest, m
         // Action C: finishing the operation succeeds now there's a per-op HAT.
         reader.recv();
         let result = op.finish(Some(b"data"), None);
-        expect!(result.is_ok());
+        expect!(result.is_ok(), "unexpected failure {result:?}");
         info!("C: performed auth-per-op op expected");
         writer.send(&Barrier::new(None)); // D done.
 

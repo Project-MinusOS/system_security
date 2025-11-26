@@ -173,7 +173,8 @@ fn perform_rsa_sign_key_op_failure(digest: Digest, alias: &str, padding: Padding
 
     let e = result.unwrap_err();
     assert!(
-        e == Error::Km(ErrorCode::UNKNOWN_ERROR) || e == Error::Km(ErrorCode::INCOMPATIBLE_DIGEST)
+        e == Error::Km(ErrorCode::UNKNOWN_ERROR) || e == Error::Km(ErrorCode::INCOMPATIBLE_DIGEST),
+        "unexpected error {e:?}"
     );
 
     delete_app_key(&sl.keystore2, alias).unwrap();
@@ -208,7 +209,7 @@ fn create_rsa_encrypt_decrypt_key_op_success(
         ForcedOp(false),
     );
 
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
 
     delete_app_key(&sl.keystore2, alias).unwrap();
 }

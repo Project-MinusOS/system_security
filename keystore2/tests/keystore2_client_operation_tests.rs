@@ -547,7 +547,7 @@ fn keystore2_op_abort_success_test() {
     let op: binder::Strong<dyn IKeystoreOperation> = op_response.iOperation.unwrap();
     op.update(b"my message").unwrap();
     let result = key_generations::map_ks_error(op.abort());
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
 
     // Try to use the op handle after abort.
     let result = key_generations::map_ks_error(op.finish(None, None));

@@ -116,7 +116,10 @@ fn perform_ec_sign_key_op_with_none_or_md5_digest(alias: &str, digest: Digest, e
         }
         Err(e) => {
             assert_eq!(e, Error::Km(ErrorCode::UNSUPPORTED_DIGEST));
-            assert!(digest == Digest::NONE || digest == Digest::MD5);
+            assert!(
+                digest == Digest::NONE || digest == Digest::MD5,
+                "unexpected digest {digest:?}"
+            );
         }
     }
 
@@ -261,10 +264,13 @@ fn keystore2_generate_ec_key_missing_curve() {
     ));
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        Error::Km(ErrorCode::UNSUPPORTED_EC_CURVE) | Error::Km(ErrorCode::UNSUPPORTED_KEY_SIZE)
-    ));
+    assert!(
+        matches!(
+            err,
+            Error::Km(ErrorCode::UNSUPPORTED_EC_CURVE) | Error::Km(ErrorCode::UNSUPPORTED_KEY_SIZE)
+        ),
+        "unexpected error {err:?}"
+    );
 }
 
 /// Try to generate a EC key with curve `CURVE_25519` having `SIGN and AGREE_KEY` purposes.
