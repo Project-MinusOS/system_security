@@ -488,7 +488,7 @@ pub fn delete_all_entries(keystore2: &binder::Strong<dyn IKeystoreService>) {
             delete_app_key(keystore2, &alias).unwrap();
         });
     }
-    assert!(keystore2.getNumberOfEntries(Domain::APP, -1).unwrap() == 0);
+    assert_eq!(keystore2.getNumberOfEntries(Domain::APP, -1).unwrap(), 0);
 }
 
 /// Encrypt the secure key with given transport key.

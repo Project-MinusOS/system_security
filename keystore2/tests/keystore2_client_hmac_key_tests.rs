@@ -99,7 +99,7 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_key_size() {
         match result {
             Ok(_) => {
                 delete_app_key(&sl.keystore2, &alias).unwrap();
-                assert!((key_size >= 64 && key_size % 8 == 0));
+                assert!((key_size >= 64 && key_size % 8 == 0), "unexpected key size: {key_size}");
             }
             Err(e) => {
                 assert_eq!(e, Error::Km(ErrorCode::UNSUPPORTED_KEY_SIZE));
@@ -129,7 +129,10 @@ fn keystore2_hmac_gen_keys_fails_expect_unsupported_min_mac_length() {
         )) {
             Ok(_) => {
                 delete_app_key(&sl.keystore2, &alias).unwrap();
-                assert!((min_mac_len >= 64 && min_mac_len % 8 == 0));
+                assert!(
+                    (min_mac_len >= 64 && min_mac_len % 8 == 0),
+                    "unexpected MinMacLen: {min_mac_len}"
+                );
             }
             Err(e) => {
                 assert_eq!(e, Error::Km(ErrorCode::UNSUPPORTED_MIN_MAC_LENGTH));

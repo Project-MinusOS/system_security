@@ -288,7 +288,7 @@ fn keystore2_rsa_import_key_with_multipurpose_fails_incompt_purpose_error() {
             assert_eq!(Error::Km(ErrorCode::INCOMPATIBLE_PURPOSE), result.unwrap_err());
         }
     } else {
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "unexpected failure {result:?}");
     }
 }
 

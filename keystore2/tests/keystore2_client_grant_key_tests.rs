@@ -926,7 +926,7 @@ fn ungrant_deleted_app_key_fails() {
             Some(alias),
             None,
         );
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "unexpected failure {result:?}");
 
         grant_key.nspace
     };
