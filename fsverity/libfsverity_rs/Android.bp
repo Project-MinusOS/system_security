@@ -2,16 +2,38 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-rust_library {
-    name: "libfsverity_rs",
-    crate_name: "fsverity",
-    srcs: ["lib.rs"],
+rust_defaults {
+    name: "fsverity_rs_defaults",
     edition: "2021",
+    srcs: ["lib.rs"],
     rustlibs: [
         "libnix",
     ],
+}
+
+rust_library {
+    name: "libfsverity_rs",
+    crate_name: "fsverity",
+    defaults: ["fsverity_rs_defaults"],
     apex_available: [
         "com.android.compos",
         "com.android.virt",
     ],
+}
+
+rust_test {
+    name: "libfsverity_rs_test",
+    rustlibs: [
+        "libanyhow",
+        "libtempfile",
+        "libscopeguard",
+    ],
+
+    team: "trendy_team_desktop_security",
+    defaults: ["fsverity_rs_defaults"],
+    test_suites: ["general-tests"],
+    test_config: "libfsverity_rs_test.xml",
+    test_options: {
+        unit_test: true,
+    },
 }
