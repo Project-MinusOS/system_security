@@ -34,32 +34,10 @@ flag {
 }
 
 flag {
-  name: "remove_rebound_keyblobs_fix"
-  namespace: "hardware_backed_security"
-  description: "Garbage collect keyblobs associated with keys that have been rebound"
-  bug: "416190842"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
-  is_fixed_read_only: true
-}
-
-flag {
   name: "make_id_attestation_feature_public"
   namespace: "hardware_backed_security"
   description: "Makes the FEATURE_DEVICE_ID_ATTESTATION PackageManager feature public"
   bug: "432211581"
-  is_fixed_read_only: true
-}
-
-flag {
-  name: "extra_sqlite_sync"
-  namespace: "hardware_backed_security"
-  description: "Enable synchronous=EXTRA for SQLite database"
-  bug: "354869460"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
   is_fixed_read_only: true
 }
 
