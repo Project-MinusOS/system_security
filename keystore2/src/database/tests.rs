@@ -31,7 +31,6 @@ use android_hardware_security_secureclock::aidl::android::hardware::security::se
     Timestamp::Timestamp,
 };
 use keystore2_test_utils::TempDir;
-use keystore2_flags;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -2606,10 +2605,6 @@ fn blob_count_in_state(db: &mut KeystoreDB, sc_type: SubComponentType, state: Bl
 fn test_blobentry_gc() -> Result<()> {
     use BlobState::{Current, Orphaned, Superseded};
 
-    // Make parts of the test conditional on whether the fix for lost keyblobs from key rebind is
-    // present.
-    let fixed = keystore2_flags::remove_rebound_keyblobs_fix();
-
     init_test_logging();
     let mut db = new_test_db()?;
 
@@ -2723,12 +2718,8 @@ fn test_blobentry_gc() -> Result<()> {
     log::info!("Perform GC([])");
     let superseded = db.handle_next_superseded_blobs(&[], 20).unwrap();
     let superseded_ids: Vec<i64> = superseded.iter().map(|v| v.blob_id).collect();
-    let (want_superseded, want_key2_state) = if fixed {
-        (vec![orig_blob_id(1), orig_blob_id(2), orig_blob_id(3), orig_blob_id(4)], Orphaned)
-    } else {
-        // Prior behaviour leaves the rebound keyblob present and Current.
-        (vec![orig_blob_id(1), orig_blob_id(3), orig_blob_id(4)], Current)
-    };
+    let want_superseded = vec![orig_blob_id(1), orig_blob_id(2), orig_blob_id(3), orig_blob_id(4)];
+    let want_key2_state = Orphaned;
 
     assert_eq!(superseded_ids, want_superseded,);
     assert_eq!(
@@ -2753,16 +2744,7 @@ fn test_blobentry_gc() -> Result<()> {
     let superseded = db.handle_next_superseded_blobs(&superseded_ids, 20).unwrap();
     let superseded_ids: Vec<i64> = superseded.iter().map(|v| v.blob_id).collect();
     assert_eq!(0, superseded.len());
-    let final_blobs = if fixed {
-        vec![(0, orig_blob_id(0), Current), (1, 16, Current), (5, 17, Current)]
-    } else {
-        vec![
-            (0, orig_blob_id(0), Current),
-            (1, 16, Current),
-            (2, orig_blob_id(2), Current), // orphaned/leaked
-            (5, 17, Current),
-        ]
-    };
+    let final_blobs = vec![(0, orig_blob_id(0), Current), (1, 16, Current), (5, 17, Current)];
 
     assert_eq!(
         describe_blobs(&mut db, SubComponentType::KEY_BLOB),
@@ -2770,7 +2752,7 @@ fn test_blobentry_gc() -> Result<()> {
         "After GC({superseded_ids:?})"
     );
     // The CERT[_CHAIN] blobs for keys 2,3,4 are now gone.
-    let final_cert_count = if fixed { 2 } else { 3 };
+    let final_cert_count = 2;
     assert_eq!(final_cert_count, blob_count(&mut db, SubComponentType::CERT));
     assert_eq!(final_cert_count, blob_count(&mut db, SubComponentType::CERT_CHAIN));
 
@@ -3156,7 +3138,6 @@ fn test_upgrade_1_to_2_with_many_keys() -> Result<()> {
 #[test]
 fn test_many_rebind_same_alias() -> Result<()> {
     init_test_logging();
-    let fixed = keystore2_flags::remove_rebound_keyblobs_fix();
 
     // Put the test database on disk for a more realistic result.
     let db_root = tempfile::Builder::new().prefix("ks2db-test-").tempdir().unwrap();
@@ -3207,16 +3188,6 @@ fn test_many_rebind_same_alias() -> Result<()> {
         // ... remove all unreferenced `keyentry` rows
         assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Live), 1);
         assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Unreferenced), 0);
-
-        if !fixed {
-            // Prior behaviour incorrectly leaves orphaned keyblobs alone.
-            assert_eq!(superseded_blobs.len(), 0);
-            assert_eq!(
-                blob_count_in_state(&mut db, SubComponentType::KEY_BLOB, BlobState::Current),
-                key_count
-            );
-            return Ok(());
-        }
 
         // ... reduce the number of blobs in the table by the number of IDs passed in
         orphan_blob_count -= superseded_ids.len();

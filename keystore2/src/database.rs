@@ -73,7 +73,6 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 };
 use anyhow::{anyhow, Context, Result};
 use keystore2_crypto::ZVec;
-use keystore2_flags;
 use log::{error, info};
 #[cfg(not(test))]
 use rand::random;
@@ -1199,11 +1198,9 @@ impl KeystoreDB {
         conn.execute("PRAGMA persistent.cache_size = -500;", params![])
             .context("Failed to decrease cache size for persistent db")?;
 
-        if keystore2_flags::extra_sqlite_sync() {
-            log::info!("Setting synchronous=EXTRA");
-            conn.execute("PRAGMA persistent.synchronous = EXTRA;", params![])
-                .context("Failed to set synchronous mode to EXTRA")?;
-        }
+        log::info!("Setting synchronous=EXTRA");
+        conn.execute("PRAGMA persistent.synchronous = EXTRA;", params![])
+            .context("Failed to set synchronous mode to EXTRA")?;
 
         Ok(conn)
     }
@@ -1433,25 +1430,23 @@ impl KeystoreDB {
     pub fn cleanup_leftovers(&mut self) -> Result<usize> {
         let _wp = wd::watch("KeystoreDB::cleanup_leftovers");
 
-        if keystore2_flags::remove_rebound_keyblobs_fix() {
-            self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
-                // Mark as orphaned any blobentry rows that have no associated keyentry row.
-                // Apply a per-reboot limit to avoid the possibility of delayed startup.
-                tx.execute(
-                    "UPDATE persistent.blobentry SET state = ?
+        self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
+            // Mark as orphaned any blobentry rows that have no associated keyentry row.
+            // Apply a per-reboot limit to avoid the possibility of delayed startup.
+            tx.execute(
+                "UPDATE persistent.blobentry SET state = ?
                     WHERE id IN (
                       SELECT id FROM persistent.blobentry
                       WHERE keyentryid NOT IN (
                         SELECT id FROM persistent.keyentry
                       )
                       LIMIT 5000);",
-                    params![BlobState::Orphaned],
-                )
-                .context("Trying to mark orphaned blobs")
-                .need_gc()
-            })
-            .context(ks_err!())?;
-        }
+                params![BlobState::Orphaned],
+            )
+            .context("Trying to mark orphaned blobs")
+            .need_gc()
+        })
+        .context(ks_err!())?;
 
         self.with_transaction(Immediate("TX_cleanup_leftovers"), |tx| {
             tx.execute(
@@ -2617,20 +2612,18 @@ impl KeystoreDB {
             )
             .context("Trying to delete grants.")?;
 
-            if keystore2_flags::remove_rebound_keyblobs_fix() {
-                // Mark as orphaned any blobentry rows that are associated with keyentry rows that
-                // are about to be deleted.  The orphaned rows will be removed in a later GC
-                // operation (which also involves notifying the owning KeyMint of keyblob deletion).
-                tx.execute(
-                    "UPDATE persistent.blobentry SET state=?
+            // Mark as orphaned any blobentry rows that are associated with keyentry rows that
+            // are about to be deleted.  The orphaned rows will be removed in a later GC
+            // operation (which also involves notifying the owning KeyMint of keyblob deletion).
+            tx.execute(
+                "UPDATE persistent.blobentry SET state=?
                     WHERE keyentryid IN (
                       SELECT id FROM persistent.keyentry
                       WHERE state = ?
                     );",
-                    params![BlobState::Orphaned, KeyLifeCycle::Unreferenced],
-                )
-                .context("Trying to mark to-be-orphaned blobs")?;
-            }
+                params![BlobState::Orphaned, KeyLifeCycle::Unreferenced],
+            )
+            .context("Trying to mark to-be-orphaned blobs")?;
 
             tx.execute(
                 "DELETE FROM persistent.keyentry
