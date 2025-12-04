@@ -47,7 +47,7 @@ use anyhow::{Context, Result};
 use binder::FromIBinder;
 use binder::{get_declared_instances, is_declared};
 use log::{error, info};
-use rustutils::system_properties::PropertyWatcher;
+use rustutils::android::system_properties::PropertyWatcher;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, LazyLock, Mutex, RwLock,

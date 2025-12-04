@@ -54,6 +54,11 @@ DEFINE_string(require_uds_certs, "",
               "Comma-delimited list of names of IRemotelyProvisionedComponent instances for which "
               "UDS certificate chains are required to be present in the CSR. Example: "
               "avf,default,strongbox. Defaults to the empty string.");
+DEFINE_string(hal_instances, "",
+              "Comma-delimited list of names of IRemotelyProvisionedComponent instances to include "
+              "CSRs for (if the instance(s) are present). If not specified, CSRs will be outputted "
+              "for all present (system-declared) instances. "
+              "Example: avf,default,strongbox. Defaults to the empty string.");
 
 namespace {
 
@@ -66,11 +71,18 @@ constexpr std::string_view kBuildPlusCsr = "build+csr";  // Text-encoded (JSON) 
 struct CsrValidationConfig {
     // Names of IRemotelyProvisionedComponent instances for which degenerate DICE
     // chains are allowed.
-    std::unordered_set<std::string>* allow_degenerate_irpc_names;
+    std::unordered_set<std::string> allow_degenerate_irpc_names;
 
     // Names of IRemotelyProvisionedComponent instances for which UDS certificate
     // chains are required to be present in the CSR.
-    std::unordered_set<std::string>* require_uds_certs_irpc_names;
+    std::unordered_set<std::string> require_uds_certs_irpc_names;
+
+    // Names of IRemotelyProvisionedComponent instances to be present in the CSR/include CSRs for
+    // (if present)
+    std::unordered_set<std::string> hal_instances_irpc_names;
+
+    // Present/Include all names of IRemotelyProvisionedComponent instances in the CSR
+    bool require_all_hal_instances_irpc_names;
 };
 
 std::string getFullServiceName(const char* descriptor, const char* name) {
@@ -126,6 +138,21 @@ void getCsrForIRpc(const char* descriptor, const char* name, IRemotelyProvisione
 // for every IRemotelyProvisionedComponent.
 void getCsrForInstance(const char* name, void* context) {
     auto fullName = getFullServiceName(IRemotelyProvisionedComponent::descriptor, name);
+
+    if (context == nullptr) {
+        std::cerr << "Unable to get context for '" << fullName << "', exiting." << std::endl;
+        exit(-1);
+    }
+
+    auto csrValidationConfig = static_cast<CsrValidationConfig*>(context);
+    // Record the fact that this IRemotelyProvisionedComponent instance was found by removing it
+    // from the sets in the context.
+    bool outputCert = csrValidationConfig->require_all_hal_instances_irpc_names ||
+                      csrValidationConfig->hal_instances_irpc_names.erase(name) > 0;
+    if (!outputCert) {
+        return;
+    }
+
     std::future<AIBinder*> waitForServiceFunc =
         std::async(std::launch::async, AServiceManager_waitForService, fullName.c_str());
     if (waitForServiceFunc.wait_for(std::chrono::seconds(10)) == std::future_status::timeout) {
@@ -141,27 +168,13 @@ void getCsrForInstance(const char* name, void* context) {
         exit(-1);
     }
 
-    if (context == nullptr) {
-        std::cerr << "Unable to get context for '" << fullName << "', exiting." << std::endl;
-        exit(-1);
-    }
-
-    auto csrValidationConfig = static_cast<CsrValidationConfig*>(context);
-    bool allowDegenerateFieldNotNull = csrValidationConfig->allow_degenerate_irpc_names != nullptr;
-    bool allowDegenerate = allowDegenerateFieldNotNull &&
-                           csrValidationConfig->allow_degenerate_irpc_names->count(name) > 0;
-    bool requireUdsCertsFieldNotNull = csrValidationConfig->require_uds_certs_irpc_names != nullptr;
-    bool requireUdsCerts = requireUdsCertsFieldNotNull &&
-                           csrValidationConfig->require_uds_certs_irpc_names->count(name) > 0;
+    bool allowDegenerate = csrValidationConfig->allow_degenerate_irpc_names.count(name) > 0;
+    bool requireUdsCerts = csrValidationConfig->require_uds_certs_irpc_names.count(name) > 0;
 
     // Record the fact that this IRemotelyProvisionedComponent instance was found by removing it
     // from the sets in the context.
-    if (allowDegenerateFieldNotNull) {
-        csrValidationConfig->allow_degenerate_irpc_names->erase(name);
-    }
-    if (requireUdsCertsFieldNotNull) {
-        csrValidationConfig->require_uds_certs_irpc_names->erase(name);
-    }
+    csrValidationConfig->allow_degenerate_irpc_names.erase(name);
+    csrValidationConfig->require_uds_certs_irpc_names.erase(name);
 
     getCsrForIRpc(IRemotelyProvisionedComponent::descriptor, name, rkpService.get(),
                   allowDegenerate, requireUdsCerts);
@@ -172,22 +185,23 @@ void getCsrForInstance(const char* name, void* context) {
 int main(int argc, char** argv) {
     gflags::ParseCommandLineFlags(&argc, &argv, /*remove_flags=*/true);
 
-    auto allowDegenerateIRpcNames = parseCommaDelimited(FLAGS_allow_degenerate);
-    auto requireUdsCertsIRpcNames = parseCommaDelimited(FLAGS_require_uds_certs);
     CsrValidationConfig csrValidationConfig = {
-        .allow_degenerate_irpc_names = &allowDegenerateIRpcNames,
-        .require_uds_certs_irpc_names = &requireUdsCertsIRpcNames,
+        .allow_degenerate_irpc_names = parseCommaDelimited(FLAGS_allow_degenerate),
+        .require_uds_certs_irpc_names = parseCommaDelimited(FLAGS_require_uds_certs),
+        .hal_instances_irpc_names = parseCommaDelimited(FLAGS_hal_instances),
     };
+    csrValidationConfig.require_all_hal_instances_irpc_names =
+        csrValidationConfig.hal_instances_irpc_names.empty();
 
     AServiceManager_forEachDeclaredInstance(IRemotelyProvisionedComponent::descriptor,
                                             &csrValidationConfig, getCsrForInstance);
 
     // Append drm CSRs
     for (auto const& [name, irpc] : android::mediadrm::getDrmRemotelyProvisionedComponents()) {
-        bool allowDegenerate = allowDegenerateIRpcNames.count(name) != 0;
-        allowDegenerateIRpcNames.erase(name);
-        auto requireUdsCerts = requireUdsCertsIRpcNames.count(name) != 0;
-        requireUdsCertsIRpcNames.erase(name);
+        bool allowDegenerate = csrValidationConfig.allow_degenerate_irpc_names.count(name) != 0;
+        csrValidationConfig.allow_degenerate_irpc_names.erase(name);
+        auto requireUdsCerts = csrValidationConfig.require_uds_certs_irpc_names.count(name) != 0;
+        csrValidationConfig.require_uds_certs_irpc_names.erase(name);
         getCsrForIRpc(IDrmFactory::descriptor, name.c_str(), irpc.get(), allowDegenerate,
                       requireUdsCerts);
     }
@@ -195,15 +209,20 @@ int main(int argc, char** argv) {
     // Print a warning for IRemotelyProvisionedComponent instance names that were passed
     // in as parameters to the "require_uds_certs" and "allow_degenerate" flags but were
     // ignored because no instances with those names were found.
-    for (const auto& irpcName : allowDegenerateIRpcNames) {
+    for (const auto& irpcName : csrValidationConfig.allow_degenerate_irpc_names) {
         std::cerr << "WARNING: You requested special handling of 'self_test' validation checks "
                   << "for '" << irpcName << "' via the 'allow_degenerate' flag but no such "
                   << "IRemotelyProvisionedComponent instance exists." << std::endl;
     }
-    for (const auto& irpcName : requireUdsCertsIRpcNames) {
+    for (const auto& irpcName : csrValidationConfig.require_uds_certs_irpc_names) {
         std::cerr << "WARNING: You requested special handling of 'self_test' validation checks "
                   << "for '" << irpcName << "' via the 'require_uds_certs' flag but no such "
                   << "IRemotelyProvisionedComponent instance exists." << std::endl;
+    }
+    for (const auto& irpcName: csrValidationConfig.hal_instances_irpc_names) {
+        std::cerr << "WARNING: You requested including CSR for '" << irpcName << "' via the "
+                  << "'hal_instances' flag but no such IRemotelyProvisionedComponent "
+                  << "instance exists." << std::endl;
     }
 
     return 0;

@@ -45,7 +45,7 @@ use keystore2_test_utils::{
     run_as::{ChannelReader, ChannelWriter}, expect_km_error,
 };
 use log::{warn, info};
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 use std::{time::Duration, thread::sleep};
 
 /// Test user ID.

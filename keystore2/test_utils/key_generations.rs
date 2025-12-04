@@ -419,7 +419,7 @@ macro_rules! expect_km_error {
 /// Get the value of the given system property, if the given system property doesn't exist
 /// then returns an empty byte vector.
 pub fn get_system_prop(name: &str) -> Vec<u8> {
-    match rustutils::system_properties::read(name) {
+    match rustutils::android::system_properties::read(name) {
         Ok(Some(value)) => value.as_bytes().to_vec(),
         _ => vec![],
     }
@@ -566,7 +566,7 @@ fn check_common_auths(
         &KeyParameter {
             tag: Tag::USER_ID,
             value: KeyParameterValue::Integer(
-                rustutils::users::multiuser_get_user_id(ThreadState::get_calling_uid())
+                rustutils::android::users::multiuser_get_user_id(ThreadState::get_calling_uid())
                     .try_into()
                     .unwrap()
             )

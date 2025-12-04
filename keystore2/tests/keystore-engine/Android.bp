@@ -37,7 +37,7 @@ rust_test {
         "libkeymint_support",
         // Also need the -ndk variants because libkeystore-engine depends on them.
         // TODO: figure out why using the ".._use_latest_aidl_ndk_static" defaults doesn't work.
-        "android.system.keystore2-V5-ndk",
+        "android.system.keystore2-V6-ndk",
         "android.hardware.security.keymint-V4-ndk",
     ],
     require_root: true,

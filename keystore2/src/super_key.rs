@@ -45,7 +45,7 @@ use keystore2_crypto::{
     AES_256_KEY_LENGTH,
 };
 use log::{error, info, warn};
-use rustutils::system_properties::PropertyWatcher;
+use rustutils::android::system_properties::PropertyWatcher;
 use std::{
     collections::HashMap,
     sync::Arc,

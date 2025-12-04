@@ -34,14 +34,6 @@ flag {
 }
 
 flag {
-  name: "count_keys_per_uid"
-  namespace: "hardware_backed_security"
-  description: "Track counts of keys per-uid"
-  bug: "395078130"
-  is_fixed_read_only: true
-}
-
-flag {
   name: "remove_rebound_keyblobs_fix"
   namespace: "hardware_backed_security"
   description: "Garbage collect keyblobs associated with keys that have been rebound"
@@ -68,5 +60,21 @@ flag {
   metadata {
     purpose: PURPOSE_BUGFIX
   }
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "limit_keys_per_uid"
+  namespace: "hardware_backed_security"
+  description: "Apply limits of #keys per-uid"
+  bug: "395078130"
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "mldsa_support"
+  namespace: "hardware_backed_security"
+  description: "Enable support for ML-DSA-65 and ML-DSA-87 in the AndroidKeyStore provider"
+  bug: "395069350"
   is_fixed_read_only: true
 }

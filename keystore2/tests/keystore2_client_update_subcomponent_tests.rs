@@ -23,7 +23,7 @@ use keystore2_test_utils::{
     get_keystore_service, key_generations, key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::getuid;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 /// Generate a key and update its public certificate and certificate chain. Test should be able to
 /// load the key and able to verify whether its certificate and cert-chain are updated successfully.
