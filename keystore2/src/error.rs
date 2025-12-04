@@ -191,7 +191,7 @@ pub fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
 /// If the formatted string was not convertible because it contained a nul byte,
 /// None is returned and a warning is logged.
 pub fn anyhow_error_to_cstring(e: &anyhow::Error) -> Option<CString> {
-    match CString::new(format!("{:?}", e)) {
+    match CString::new(format!("{e:?}")) {
         Ok(msg) => Some(msg),
         Err(_) => {
             warn!("Cannot convert error message to CStr. It contained a nul byte.");

@@ -287,7 +287,7 @@ fn keystore2_max_forced_ops_test() {
 /// 3. Sequentially try to use above created `n` number of operations and also add a new operation,
 ///    so that it should trigger cannibalizing one of their own sibling operations.
 ///    3.1 While trying to use these pruned operations an `INVALID_OPERATION_HANDLE` error is
-///        expected as they are already pruned.
+///    expected as they are already pruned.
 /// 4. Notify the child process to resume and complete the operation. It is expected to complete the
 ///    operation successfully.
 /// 5. Try to use the latest operation of parent. It is expected to complete the operation

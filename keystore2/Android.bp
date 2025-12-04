@@ -69,6 +69,7 @@ rust_defaults {
         "libthiserror",
         "libtokio",
         "libwatchdog_rs",
+        "packagemanager_aidl-rust",
     ],
     shared_libs: [
         "libcutils",

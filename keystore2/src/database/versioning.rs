@@ -85,7 +85,7 @@ where
     while db_version < current_version {
         info!("Current DB version={db_version}, perform upgrade");
         db_version = upgraders[db_version as usize](tx).with_context(|| {
-            format!("In upgrade_database: Trying to upgrade from db version {}.", db_version)
+            format!("In upgrade_database: Trying to upgrade from db version {db_version}.")
         })?;
         info!("DB upgrade successful, current DB version now={db_version}");
     }
