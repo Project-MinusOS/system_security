@@ -120,7 +120,7 @@ enum DeferredAuthState {
     /// to return an operation challenge to the client which should reward us with an
     /// operation specific auth token. If it is not provided before the client calls update
     /// or finish, the operation fails as not authorized.
-    OpAuthRequired,
+    OpAuthRequired(Vec<SecureUserId>, HardwareAuthenticatorType),
     /// Indicates that the operation requires a time stamp token. The auth token was already
     /// loaded from the database, but it has to be accompanied by a time stamp token to inform
     /// the target KM with a different clock about the time on the authenticators.
@@ -199,15 +199,31 @@ impl TokenReceiverMap {
 }
 
 #[derive(Debug)]
-struct TokenReceiver(Weak<AuthRequest>);
+struct TokenReceiver {
+    req: Weak<AuthRequest>,
+    // Remember the SIDs and auth_type that the token is expected to satisfy.
+    sids: Vec<SecureUserId>,
+    auth_type: HardwareAuthenticatorType,
+}
 
 impl TokenReceiver {
     fn is_obsolete(&self) -> bool {
-        self.0.upgrade().is_none()
+        self.req.upgrade().is_none()
     }
 
     fn add_auth_token(&self, hat: HardwareAuthToken) {
-        if let Some(state_arc) = self.0.upgrade() {
+        if let Some(state_arc) = self.req.upgrade() {
+            // Emit a warning if the auth token doesn't satisfy expectations.
+            if (self.auth_type.0 & hat.authenticatorType.0) == 0 {
+                error!(
+                    "Per-op {hat:?} doesn't match auth type {:?} required for key!",
+                    self.auth_type
+                );
+            }
+            if !self.sids.iter().any(|&sid| hat.userId == sid.0 || hat.authenticatorId == sid.0) {
+                error!("Per-op {hat:?} doesn't have a SID required for key: {:?}", self.sids);
+            }
+
             state_arc.add_auth_token(hat);
         }
     }
@@ -236,9 +252,13 @@ impl AuthInfo {
         challenge: Challenge,
     ) -> Option<OperationChallenge> {
         match &self.state {
-            DeferredAuthState::OpAuthRequired => {
+            DeferredAuthState::OpAuthRequired(sids, auth_type) => {
                 let auth_request = AuthRequest::op_auth();
-                let token_receiver = TokenReceiver(Arc::downgrade(&auth_request));
+                let token_receiver = TokenReceiver {
+                    req: Arc::downgrade(&auth_request),
+                    sids: sids.to_vec(),
+                    auth_type: *auth_type,
+                };
                 ENFORCEMENTS.register_op_auth_receiver(challenge, token_receiver);
 
                 self.state = DeferredAuthState::Waiting(auth_request);
@@ -328,7 +348,7 @@ impl AuthInfo {
         match &self.state {
             DeferredAuthState::NoAuthRequired => Ok((None, None)),
             DeferredAuthState::Token(hat, tst) => Ok((Some((*hat).clone()), (*tst).clone())),
-            DeferredAuthState::OpAuthRequired | DeferredAuthState::TimeStampRequired(_) => {
+            DeferredAuthState::OpAuthRequired(_, _) | DeferredAuthState::TimeStampRequired(_) => {
                 Err(Error::Km(ErrorCode::KEY_USER_NOT_AUTHENTICATED)).context(ks_err!(
                     "No operation auth token requested??? \
                     This should not happen."
@@ -618,7 +638,13 @@ impl Enforcements {
             };
             (Some(hat.take_auth_token()), state)
         } else {
-            (None, DeferredAuthState::OpAuthRequired)
+            (
+                None,
+                DeferredAuthState::OpAuthRequired(
+                    user_sids,
+                    user_auth_type.unwrap_or(HardwareAuthenticatorType(0)),
+                ),
+            )
         };
         Ok((hat, AuthInfo { state, key_usage_limited, confirmation_token_receiver }))
     }

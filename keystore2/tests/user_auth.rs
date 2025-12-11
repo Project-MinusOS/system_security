@@ -50,6 +50,8 @@ use std::{time::Duration, thread::sleep};
 
 /// Test user ID.
 const TEST_USER_ID: i32 = 100;
+/// Second test user ID.
+const TEST_USER2_ID: i32 = 110;
 /// Corresponding uid value.
 const UID: u32 = TEST_USER_ID as u32 * AID_USER_OFFSET + 1001;
 /// Fake synthetic password blob.
@@ -773,6 +775,245 @@ fn test_auth_bound_per_op_with_gk_failure() {
     auth_service.addAuthToken(&fake_lskf_token_with_challenge(gk_sid, challenge)).unwrap();
 
     info!("trigger child process action D and wait for completion");
+    child_handle.send(&Barrier::new(None));
+    child_handle.recv_or_die();
+
+    assert_eq!(child_handle.get_result(), Ok(()), "child process failed");
+}
+
+#[test]
+fn test_auth_bound_per_op_wrong_sid_failure() {
+    let bio_fake_sid1 = BIO_FAKE_SID_BASE + 7;
+    let bio_fake_sid2 = BIO_FAKE_SID_BASE + 8;
+    type Barrier = BarrierReachedWithData<Option<i64>>;
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_tag("keystore2_client_tests")
+            .with_max_level(log::LevelFilter::Debug),
+    );
+
+    let child_fn = move |reader: &mut ChannelReader<Barrier>,
+                         writer: &mut ChannelWriter<Barrier>|
+          -> Result<(), run_as::Error> {
+        // Now we're in a new process, wait to be notified before starting.
+        let gk_sid: i64 = match reader.recv().0 {
+            Some(sid) => sid,
+            None => {
+                // There is no AIDL Gatekeeper available, so abandon the test.  It would be nice to
+                // know this before starting the child process, but finding it out requires Binder,
+                // which can't be used until after the child has forked.
+                return Ok(());
+            }
+        };
+
+        // Action A: create a new auth-bound key which requires auth-per-operation (because
+        // AUTH_TIMEOUT is not specified), and start an operation using it.
+        let ks2 = get_keystore_service();
+        let sec_level =
+            ks2.getSecurityLevel(SecurityLevel::TRUSTED_ENVIRONMENT).context("no TEE")?;
+        let params = AuthSetBuilder::new()
+            .user_secure_id(gk_sid)
+            .user_secure_id(bio_fake_sid1)
+            .user_secure_id(bio_fake_sid2)
+            .user_auth_type(HardwareAuthenticatorType::ANY)
+            .algorithm(Algorithm::EC)
+            .purpose(KeyPurpose::SIGN)
+            .purpose(KeyPurpose::VERIFY)
+            .digest(Digest::SHA_2_256)
+            .ec_curve(EcCurve::P_256);
+
+        let KeyMetadata { key, .. } = sec_level
+            .generateKey(
+                &KeyDescriptor {
+                    domain: Domain::APP,
+                    nspace: -1,
+                    alias: Some("auth-per-op-2".to_string()),
+                    blob: None,
+                },
+                None,
+                &params,
+                0,
+                b"entropy",
+            )
+            .context("key generation failed")?;
+        info!("A: created auth-per-op key {key:?} bound to sids {gk_sid}, {bio_fake_sid1}, {bio_fake_sid2}");
+
+        // Create an operation using the key...
+        let params = AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(Digest::SHA_2_256);
+        let result = sec_level
+            .createOperation(&key, &params, UNFORCED)
+            .expect("failed to create auth-per-op operation");
+        let op = result.iOperation.context("no operation in result")?;
+        info!("A: created auth-per-op operation, got challenge {:?}", result.operationChallenge);
+
+        // ...and send the challenge out.
+        writer.send(&Barrier::new(Some(result.operationChallenge.unwrap().challenge))); // A done.
+
+        // Action B: fail because the HAT has the right challenge but wrong SID.
+        reader.recv();
+
+        let result = op.finish(Some(b"data"), None);
+        expect_km_error!(&result, ErrorCode::KEY_USER_NOT_AUTHENTICATED);
+        info!("B: failed auth-per-op op (per-op HAT with wrong SID) as expected {result:?}");
+        writer.send(&Barrier::new(None)); // B done
+
+        Ok(())
+    };
+
+    // Safety: only one thread at this point (enforced by `AndroidTest.xml` setting
+    // `--test-threads=1`), and nothing yet done with binder.
+    let mut child_handle = unsafe {
+        // Perform keystore actions while running as the test user.
+        run_as::run_as_child_app(UID, UID, child_fn)
+    }
+    .unwrap();
+
+    // Now that the separate process has been forked off, it's safe to use binder to setup test
+    // users.
+    let _ks2 = get_keystore_service();
+    let user = TestUser::new();
+    let user2 = TestUser::new_user(TEST_USER2_ID, SYNTHETIC_PASSWORD);
+    if user.gk.is_none() || user2.gk.is_none() {
+        // Can't run this test if there's no AIDL Gatekeeper.
+        child_handle.send(&Barrier::new(None));
+        assert_eq!(child_handle.get_result(), Ok(()), "child process failed");
+        return;
+    }
+    let user_id = user.id;
+    let auth_service = get_authorization();
+
+    // Lock and unlock to ensure super keys are already created.
+    auth_service.onDeviceLocked(user_id, &[], WEAK_UNLOCK_DISABLED).unwrap();
+    auth_service.onDeviceUnlocked(user_id, Some(SYNTHETIC_PASSWORD)).unwrap();
+
+    info!("trigger child process action A and wait for completion");
+    let gk_sid = user.gk_sid.unwrap();
+    child_handle.send(&Barrier::new(Some(gk_sid)));
+    let challenge = child_handle.recv_or_die().0.expect("no challenge");
+
+    // Generate an auth token with the right challenge but the wrong user.
+    let wrong_sid_hat = user2.gk_verify(challenge).expect("failed to perform GK verify");
+    auth_service.addAuthToken(&wrong_sid_hat).unwrap();
+
+    info!("trigger child process action B and wait for completion");
+    child_handle.send(&Barrier::new(None));
+    child_handle.recv_or_die();
+
+    assert_eq!(child_handle.get_result(), Ok(()), "child process failed");
+}
+
+#[test]
+fn test_auth_bound_per_op_wrong_auth_type_failure() {
+    let bio_fake_sid1 = BIO_FAKE_SID_BASE + 7;
+    type Barrier = BarrierReachedWithData<Option<i64>>;
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_tag("keystore2_client_tests")
+            .with_max_level(log::LevelFilter::Debug),
+    );
+
+    let child_fn = move |reader: &mut ChannelReader<Barrier>,
+                         writer: &mut ChannelWriter<Barrier>|
+          -> Result<(), run_as::Error> {
+        // Now we're in a new process, wait to be notified before starting.
+        let _gk_sid: i64 = match reader.recv().0 {
+            Some(sid) => sid,
+            None => {
+                // There is no AIDL Gatekeeper available, so abandon the test.  It would be nice to
+                // know this before starting the child process, but finding it out requires Binder,
+                // which can't be used until after the child has forked.
+                return Ok(());
+            }
+        };
+
+        // Action A: create a new auth-bound key which requires auth-per-operation (because
+        // AUTH_TIMEOUT is not specified), and start an operation using it.
+        let ks2 = get_keystore_service();
+        let sec_level =
+            ks2.getSecurityLevel(SecurityLevel::TRUSTED_ENVIRONMENT).context("no TEE")?;
+        let params = AuthSetBuilder::new()
+            .user_secure_id(bio_fake_sid1)
+            .user_auth_type(HardwareAuthenticatorType::FINGERPRINT)
+            .algorithm(Algorithm::EC)
+            .purpose(KeyPurpose::SIGN)
+            .purpose(KeyPurpose::VERIFY)
+            .digest(Digest::SHA_2_256)
+            .ec_curve(EcCurve::P_256);
+
+        let KeyMetadata { key, .. } = sec_level
+            .generateKey(
+                &KeyDescriptor {
+                    domain: Domain::APP,
+                    nspace: -1,
+                    alias: Some("auth-per-op-2".to_string()),
+                    blob: None,
+                },
+                None,
+                &params,
+                0,
+                b"entropy",
+            )
+            .context("key generation failed")?;
+        info!("A: created auth-per-op key {key:?} bound to fake biometric sid {bio_fake_sid1}");
+
+        // Create an operation using the key...
+        let params = AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(Digest::SHA_2_256);
+        let result = sec_level
+            .createOperation(&key, &params, UNFORCED)
+            .expect("failed to create auth-per-op operation");
+        let op = result.iOperation.context("no operation in result")?;
+        info!("A: created auth-per-op operation, got challenge {:?}", result.operationChallenge);
+
+        // ...and send the challenge out.
+        writer.send(&Barrier::new(Some(result.operationChallenge.unwrap().challenge))); // A done.
+
+        // Action B: fail because the HAT has the right challenge but wrong auth-type and SID.
+        reader.recv();
+
+        let result = op.finish(Some(b"data"), None);
+        expect_km_error!(&result, ErrorCode::KEY_USER_NOT_AUTHENTICATED);
+        info!("B: failed auth-per-op (HAT with wrong auth-type/SID) as expected {result:?}");
+        writer.send(&Barrier::new(None)); // B done
+
+        Ok(())
+    };
+
+    // Safety: only one thread at this point (enforced by `AndroidTest.xml` setting
+    // `--test-threads=1`), and nothing yet done with binder.
+    let mut child_handle = unsafe {
+        // Perform keystore actions while running as the test user.
+        run_as::run_as_child_app(UID, UID, child_fn)
+    }
+    .unwrap();
+
+    // Now that the separate process has been forked off, it's safe to use binder to setup test
+    // users.
+    let _ks2 = get_keystore_service();
+    let user = TestUser::new();
+    if user.gk.is_none() {
+        // Can't run this test if there's no AIDL Gatekeeper.
+        child_handle.send(&Barrier::new(None));
+        assert_eq!(child_handle.get_result(), Ok(()), "child process failed");
+        return;
+    }
+    let user_id = user.id;
+    let auth_service = get_authorization();
+
+    // Lock and unlock to ensure super keys are already created.
+    auth_service.onDeviceLocked(user_id, &[bio_fake_sid1], WEAK_UNLOCK_DISABLED).unwrap();
+    auth_service.onDeviceUnlocked(user_id, Some(SYNTHETIC_PASSWORD)).unwrap();
+
+    info!("trigger child process action A and wait for completion");
+    let gk_sid = user.gk_sid.unwrap();
+    child_handle.send(&Barrier::new(Some(gk_sid)));
+    let challenge = child_handle.recv_or_die().0.expect("no challenge");
+
+    // Generate an auth token with the right challenge but from Gatekeeper not biometric (so wrong
+    // auth-type and SID).
+    let wrong_hat = user.gk_verify(challenge).expect("failed to perform GK verify");
+    auth_service.addAuthToken(&wrong_hat).unwrap();
+
+    info!("trigger child process action B and wait for completion");
     child_handle.send(&Barrier::new(None));
     child_handle.recv_or_die();
 
