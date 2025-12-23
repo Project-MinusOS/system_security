@@ -50,6 +50,12 @@ cc_library {
         "libutils",
     ],
 
+    min_sdk_version: "30",
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.wifi",
+    ],
+
 }
 
 // This builds a variant of libkeystore-engine that is available vendor.

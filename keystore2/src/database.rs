@@ -73,7 +73,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 };
 use anyhow::{anyhow, Context, Result};
 use keystore2_crypto::ZVec;
-use log::{error, info};
+use log::info;
 #[cfg(not(test))]
 use rand::random;
 use rusqlite::{
