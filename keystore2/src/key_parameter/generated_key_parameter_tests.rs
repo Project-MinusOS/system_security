@@ -16,37 +16,41 @@ use super::*;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::TagType::TagType;
 
 fn get_field_by_tag_type(tag: Tag) -> KmKeyParameterValue {
-    let tag_type = TagType((tag.0 as u32 & 0xF0000000) as i32);
     match tag {
-        Tag::ALGORITHM => return KmKeyParameterValue::Algorithm(Default::default()),
-        Tag::BLOCK_MODE => return KmKeyParameterValue::BlockMode(Default::default()),
-        Tag::PADDING => return KmKeyParameterValue::PaddingMode(Default::default()),
-        Tag::DIGEST => return KmKeyParameterValue::Digest(Default::default()),
-        Tag::RSA_OAEP_MGF_DIGEST => return KmKeyParameterValue::Digest(Default::default()),
-        Tag::EC_CURVE => return KmKeyParameterValue::EcCurve(Default::default()),
-        Tag::ORIGIN => return KmKeyParameterValue::Origin(Default::default()),
-        Tag::PURPOSE => return KmKeyParameterValue::KeyPurpose(Default::default()),
-        Tag::USER_AUTH_TYPE => {
-            return KmKeyParameterValue::HardwareAuthenticatorType(Default::default())
+        Tag::ALGORITHM => KmKeyParameterValue::Algorithm(Default::default()),
+        Tag::BLOCK_MODE => KmKeyParameterValue::BlockMode(Default::default()),
+        Tag::PADDING => KmKeyParameterValue::PaddingMode(Default::default()),
+        Tag::DIGEST => KmKeyParameterValue::Digest(Default::default()),
+        Tag::RSA_OAEP_MGF_DIGEST => KmKeyParameterValue::Digest(Default::default()),
+        Tag::EC_CURVE => KmKeyParameterValue::EcCurve(Default::default()),
+        Tag::ML_DSA_VARIANT => KmKeyParameterValue::MlDsaVariant(Default::default()),
+        Tag::ORIGIN => KmKeyParameterValue::Origin(Default::default()),
+        Tag::PURPOSE => KmKeyParameterValue::KeyPurpose(Default::default()),
+        Tag::USER_AUTH_TYPE => KmKeyParameterValue::HardwareAuthenticatorType(Default::default()),
+        Tag::HARDWARE_TYPE => KmKeyParameterValue::SecurityLevel(Default::default()),
+        _ => {
+            let tag_type = TagType((tag.0 as u32 & 0xF0000000) as i32);
+            match tag_type {
+                TagType::INVALID => KmKeyParameterValue::Invalid(Default::default()),
+                TagType::ENUM | TagType::ENUM_REP => {
+                    // Enum tags should be already handled above.
+                    panic!("Unknown enum tag/tag_type: {tag:?} {tag_type:?}");
+                }
+                TagType::UINT | TagType::UINT_REP => {
+                    KmKeyParameterValue::Integer(Default::default())
+                }
+                TagType::ULONG | TagType::ULONG_REP => {
+                    KmKeyParameterValue::LongInteger(Default::default())
+                }
+                TagType::DATE => KmKeyParameterValue::DateTime(Default::default()),
+                TagType::BOOL => KmKeyParameterValue::BoolValue(Default::default()),
+                TagType::BIGNUM | TagType::BYTES => KmKeyParameterValue::Blob(Default::default()),
+                _ => {
+                    panic!("Unknown tag_type: {tag:?} {tag_type:?}");
+                }
+            }
         }
-        Tag::HARDWARE_TYPE => return KmKeyParameterValue::SecurityLevel(Default::default()),
-        _ => {}
     }
-    match tag_type {
-        TagType::INVALID => return KmKeyParameterValue::Invalid(Default::default()),
-        TagType::ENUM | TagType::ENUM_REP => {}
-        TagType::UINT | TagType::UINT_REP => {
-            return KmKeyParameterValue::Integer(Default::default())
-        }
-        TagType::ULONG | TagType::ULONG_REP => {
-            return KmKeyParameterValue::LongInteger(Default::default())
-        }
-        TagType::DATE => return KmKeyParameterValue::DateTime(Default::default()),
-        TagType::BOOL => return KmKeyParameterValue::BoolValue(Default::default()),
-        TagType::BIGNUM | TagType::BYTES => return KmKeyParameterValue::Blob(Default::default()),
-        _ => {}
-    }
-    panic!("Unknown tag/tag_type: {tag:?} {tag_type:?}");
 }
 
 fn check_field_matches_tag_type(list_o_parameters: &[KmKeyParameter]) {
@@ -57,6 +61,7 @@ fn check_field_matches_tag_type(list_o_parameters: &[KmKeyParameter]) {
             | (&KmKeyParameterValue::PaddingMode(_), KmKeyParameterValue::PaddingMode(_))
             | (&KmKeyParameterValue::Digest(_), KmKeyParameterValue::Digest(_))
             | (&KmKeyParameterValue::EcCurve(_), KmKeyParameterValue::EcCurve(_))
+            | (&KmKeyParameterValue::MlDsaVariant(_), KmKeyParameterValue::MlDsaVariant(_))
             | (&KmKeyParameterValue::Origin(_), KmKeyParameterValue::Origin(_))
             | (&KmKeyParameterValue::KeyPurpose(_), KmKeyParameterValue::KeyPurpose(_))
             | (

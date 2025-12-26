@@ -30,6 +30,7 @@ use crate::key_parameter::KeyParameterValue as KsKeyParamValue;
 use crate::ks_err;
 use crate::metrics_store::log_key_creation_event_stats;
 use crate::remote_provisioning::RemProvState;
+use crate::security_level_manager;
 use crate::super_key::{KeyBlob, SuperKeyManager};
 use crate::utils::{
     check_device_attestation_permissions, check_key_permission,
@@ -513,7 +514,11 @@ impl KeystoreSecurityLevel {
         // that NOT_BEFORE and NOT_AFTER are present.
         match params.iter().find(|kp| kp.tag == Tag::ALGORITHM) {
             Some(KeyParameter { tag: _, value: KeyParameterValue::Algorithm(Algorithm::RSA) })
-            | Some(KeyParameter { tag: _, value: KeyParameterValue::Algorithm(Algorithm::EC) }) => {
+            | Some(KeyParameter { tag: _, value: KeyParameterValue::Algorithm(Algorithm::EC) })
+            | Some(KeyParameter {
+                tag: _,
+                value: KeyParameterValue::Algorithm(Algorithm::ML_DSA),
+            }) => {
                 if !params.iter().any(|kp| kp.tag == Tag::CERTIFICATE_NOT_BEFORE) {
                     result.push(KeyParameter {
                         tag: Tag::CERTIFICATE_NOT_BEFORE,
@@ -782,7 +787,8 @@ impl KeystoreSecurityLevel {
             .and_then(|p| match &p.value {
                 KeyParameterValue::Algorithm(Algorithm::AES)
                 | KeyParameterValue::Algorithm(Algorithm::HMAC)
-                | KeyParameterValue::Algorithm(Algorithm::TRIPLE_DES) => Ok(KeyFormat::RAW),
+                | KeyParameterValue::Algorithm(Algorithm::TRIPLE_DES)
+                | KeyParameterValue::Algorithm(Algorithm::ML_DSA) => Ok(KeyFormat::RAW),
                 KeyParameterValue::Algorithm(Algorithm::RSA)
                 | KeyParameterValue::Algorithm(Algorithm::EC) => Ok(KeyFormat::PKCS8),
                 v => Err(error::Error::Km(ErrorCode::INVALID_ARGUMENT))
@@ -1115,6 +1121,7 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         forced: bool,
     ) -> binder::Result<CreateOperationResponse> {
         let _wp = self.watch("IKeystoreSecurityLevel::createOperation");
+        security_level_manager::notify_operation_performed(self.security_level);
         self.create_operation(key, operation_parameters, forced).map_err(into_logged_binder)
     }
     fn generateKey(
@@ -1128,6 +1135,7 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         // Duration is set to 5 seconds, because generateKey - especially for RSA keys, takes more
         // time than other operations
         let _wp = self.watch_millis("IKeystoreSecurityLevel::generateKey", 5000);
+        security_level_manager::notify_operation_performed(self.security_level);
         let result = self.generate_key(key, attestation_key, params, flags, entropy);
         log_key_creation_event_stats(self.security_level, params, KeyOrigin::GENERATED, &result);
         log_key_generated(key, ThreadState::get_calling_uid(), result.is_ok());
@@ -1142,6 +1150,7 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         key_data: &[u8],
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importKey");
+        security_level_manager::notify_operation_performed(self.security_level);
         let result = self.import_key(key, attestation_key, params, flags, key_data);
         log_key_creation_event_stats(self.security_level, params, KeyOrigin::IMPORTED, &result);
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
@@ -1156,6 +1165,7 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         authenticators: &[AuthenticatorSpec],
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importWrappedKey");
+        security_level_manager::notify_operation_performed(self.security_level);
         let result =
             self.import_wrapped_key(key, wrapping_key, masking_key, params, authenticators);
         log_key_creation_event_stats(
@@ -1172,10 +1182,12 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         storage_key: &KeyDescriptor,
     ) -> binder::Result<EphemeralStorageKeyResponse> {
         let _wp = self.watch("IKeystoreSecurityLevel::convertStorageKeyToEphemeral");
+        security_level_manager::notify_operation_performed(self.security_level);
         self.convert_storage_key_to_ephemeral(storage_key).map_err(into_logged_binder)
     }
     fn deleteKey(&self, key: &KeyDescriptor) -> binder::Result<()> {
         let _wp = self.watch("IKeystoreSecurityLevel::deleteKey");
+        security_level_manager::notify_operation_performed(self.security_level);
         let result = self.delete_key(key);
         log_key_deleted(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)

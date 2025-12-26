@@ -278,7 +278,7 @@ impl Maintenance {
         let mut w =
             PropertyWatcher::new(apex_prop).context(ks_err!("PropertyWatcher::new failed"))?;
         loop {
-            let value = w.read(|_name, value| Ok(value.to_string()));
+            let value = w.read(|_name, value| value.to_string());
             info!("property '{apex_prop}' is now '{value:?}'");
             if matches!(value.as_deref(), Ok("activated")) {
                 Self::read_and_set_module_info();

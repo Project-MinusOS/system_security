@@ -26,7 +26,7 @@ use android_security_maintenance::aidl::android::security::maintenance::IKeystor
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, Digest::Digest, EcCurve::EcCurve, ErrorCode::ErrorCode,
     HardwareAuthToken::HardwareAuthToken, HardwareAuthenticatorType::HardwareAuthenticatorType,
-    KeyPurpose::KeyPurpose, SecurityLevel::SecurityLevel,
+    KeyPurpose::KeyPurpose, SecurityLevel::SecurityLevel, MlDsaVariant::MlDsaVariant,
 };
 use android_hardware_gatekeeper::aidl::android::hardware::gatekeeper::{
     IGatekeeper::IGatekeeper, IGatekeeper::ERROR_RETRY_TIMEOUT,
@@ -173,7 +173,30 @@ impl Drop for TestUser {
 }
 
 #[test]
-fn test_auth_bound_timeout_with_gk() {
+fn test_mldsa_auth_bound_timeout_with_gk() {
+    let base_params = AuthSetBuilder::new()
+        .user_auth_type(HardwareAuthenticatorType::ANY)
+        .algorithm(Algorithm::ML_DSA)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::NONE)
+        .mldsa_variant(MlDsaVariant::ML_DSA_65);
+    test_auth_bound_timeout_with_gk(base_params, Digest::NONE)
+}
+
+#[test]
+fn test_ec_auth_bound_timeout_with_gk() {
+    let base_params = AuthSetBuilder::new()
+        .user_auth_type(HardwareAuthenticatorType::ANY)
+        .algorithm(Algorithm::EC)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::SHA_2_256)
+        .ec_curve(EcCurve::P_256);
+    test_auth_bound_timeout_with_gk(base_params, Digest::SHA_2_256)
+}
+
+fn test_auth_bound_timeout_with_gk(base_params: AuthSetBuilder, digest: Digest) {
     let bio_fake_sid1 = BIO_FAKE_SID_BASE + 1;
     let bio_fake_sid2 = BIO_FAKE_SID_BASE + 2;
     type Barrier = BarrierReachedWithData<Option<i64>>;
@@ -202,17 +225,11 @@ fn test_auth_bound_timeout_with_gk() {
         let ks2 = get_keystore_service();
         let sec_level =
             ks2.getSecurityLevel(SecurityLevel::TRUSTED_ENVIRONMENT).context("no TEE")?;
-        let params = AuthSetBuilder::new()
+        let params = base_params
             .user_secure_id(gk_sid)
             .user_secure_id(bio_fake_sid1)
             .user_secure_id(bio_fake_sid2)
-            .user_auth_type(HardwareAuthenticatorType::ANY)
-            .auth_timeout(3)
-            .algorithm(Algorithm::EC)
-            .purpose(KeyPurpose::SIGN)
-            .purpose(KeyPurpose::VERIFY)
-            .digest(Digest::SHA_2_256)
-            .ec_curve(EcCurve::P_256);
+            .auth_timeout(3);
 
         let KeyMetadata { key, .. } = sec_level
             .generateKey(
@@ -231,7 +248,7 @@ fn test_auth_bound_timeout_with_gk() {
         info!("A: created auth-timeout key {key:?} bound to sids {gk_sid}, {bio_fake_sid1}, {bio_fake_sid2}");
 
         // No HATs so cannot create an operation using the key.
-        let params = AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(Digest::SHA_2_256);
+        let params = AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(digest);
         let result = sec_level.createOperation(&key, &params, UNFORCED);
         expect_km_error!(&result, ErrorCode::KEY_USER_NOT_AUTHENTICATED);
         info!("A: failed auth-bound operation (no HAT) as expected {result:?}");
@@ -433,7 +450,30 @@ fn test_auth_bound_timeout_failure() {
 }
 
 #[test]
-fn test_auth_bound_per_op_with_gk() {
+fn test_mldsa_auth_bound_per_op_with_gk() {
+    let base_params = AuthSetBuilder::new()
+        .user_auth_type(HardwareAuthenticatorType::ANY)
+        .algorithm(Algorithm::ML_DSA)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::NONE)
+        .mldsa_variant(MlDsaVariant::ML_DSA_65);
+    test_auth_bound_per_op_with_gk(base_params, Digest::NONE)
+}
+
+#[test]
+fn test_ec_auth_bound_per_op_with_gk() {
+    let base_params = AuthSetBuilder::new()
+        .user_auth_type(HardwareAuthenticatorType::ANY)
+        .algorithm(Algorithm::EC)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::SHA_2_256)
+        .ec_curve(EcCurve::P_256);
+    test_auth_bound_per_op_with_gk(base_params, Digest::SHA_2_256)
+}
+
+fn test_auth_bound_per_op_with_gk(base_params: AuthSetBuilder, digest: Digest) {
     let bio_fake_sid1 = BIO_FAKE_SID_BASE + 5;
     let bio_fake_sid2 = BIO_FAKE_SID_BASE + 6;
     type Barrier = BarrierReachedWithData<Option<i64>>;
@@ -462,15 +502,7 @@ fn test_auth_bound_per_op_with_gk() {
         let ks2 = get_keystore_service();
         let sec_level =
             ks2.getSecurityLevel(SecurityLevel::TRUSTED_ENVIRONMENT).context("no TEE")?;
-        let params = AuthSetBuilder::new()
-            .user_secure_id(gk_sid)
-            .user_secure_id(bio_fake_sid1)
-            .user_auth_type(HardwareAuthenticatorType::ANY)
-            .algorithm(Algorithm::EC)
-            .purpose(KeyPurpose::SIGN)
-            .purpose(KeyPurpose::VERIFY)
-            .digest(Digest::SHA_2_256)
-            .ec_curve(EcCurve::P_256);
+        let params = base_params.user_secure_id(gk_sid).user_secure_id(bio_fake_sid1);
 
         let KeyMetadata { key, .. } = sec_level
             .generateKey(
@@ -489,7 +521,7 @@ fn test_auth_bound_per_op_with_gk() {
         info!("A: created auth-per-op key {key:?} bound to sids {gk_sid}, {bio_fake_sid1}");
 
         // We can create an operation using the key...
-        let params = AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(Digest::SHA_2_256);
+        let params = AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(digest);
         let result = sec_level
             .createOperation(&key, &params, UNFORCED)
             .expect("failed to create auth-per-op operation");

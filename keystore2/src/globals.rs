@@ -116,8 +116,11 @@ impl<T: FromIBinder + ?Sized> DevicesMap<T> {
             .map(|(dev, hw_info)| ((*dev).clone(), (*hw_info).clone(), *uuid))
     }
 
-    fn devices(&self) -> Vec<Strong<T>> {
-        self.devices_by_uuid.values().map(|(dev, _)| dev.clone()).collect()
+    fn devices(&self) -> Vec<(Strong<T>, SecurityLevel)> {
+        self.devices_by_uuid
+            .values()
+            .map(|(dev, hw_info)| (dev.clone(), hw_info.securityLevel))
+            .collect()
     }
 
     /// The requested security level and the security level of the actual implementation may
@@ -276,8 +279,9 @@ fn connect_keymint(
     // If the KeyMint device is back-level, use a wrapper that intercepts and
     // emulates things that are not supported by the hardware.
     let keymint = match hal_version {
-        Some(400) | Some(300) | Some(200) => {
-            // KeyMint v2+: use as-is (we don't have any software emulation of v3 or v4-specific KeyMint features).
+        Some(500) | Some(400) | Some(300) | Some(200) => {
+            // KeyMint v2+: use as-is (we don't have any software emulation of KeyMint features from
+            // v3 or later).
             info!(
                 "KeyMint device is current version ({hal_version:?}) for security level: {security_level:?}",
             );
@@ -363,8 +367,8 @@ pub fn get_keymint_dev_by_uuid(
     }
 }
 
-/// Return all known keymint devices.
-pub fn get_keymint_devices() -> Vec<Strong<dyn IKeyMintDevice>> {
+/// Return all known IKeyMintDevice instances along with their security levels.
+pub fn get_keymint_devices() -> Vec<(Strong<dyn IKeyMintDevice>, SecurityLevel)> {
     KEY_MINT_DEVICES.lock().unwrap().devices()
 }
 
