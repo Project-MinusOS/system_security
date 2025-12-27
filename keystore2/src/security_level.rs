@@ -589,6 +589,72 @@ impl KeystoreSecurityLevel {
         Ok(())
     }
 
+    // Generates a key and retries with swapped IMEI if an attestation ID mismatch error occurs.
+    // This is a workaround for the fact that KeyMint was not required to support reordering
+    // of IMEIs, even though the OS does not guarantee that the IMEI values are stably ordered.
+    // This method can likely be safely removed in 34q2, once all devices still receiving
+    // updates have KeyMint instances that are guaranteed to support this flexible ordering.
+    fn generate_key_and_retry_on_att_id_mismatch(
+        &self,
+        params: &[KeyParameter],
+        attest_key: Option<&AttestationKey>,
+    ) -> Result<KeyCreationResult, Error> {
+        let result = map_km_error({
+            let _wp = self.watch_millis(
+                "KeystoreSecurityLevel::generate_key: calling IKeyMintDevice::generateKey",
+                5000,
+            );
+            self.keymint.generateKey(params, attest_key)
+        });
+
+        match &result {
+            Err(Error::Km(ErrorCode::CANNOT_ATTEST_IDS))
+            | Err(Error::Km(ErrorCode::INVALID_TAG))
+            | Err(Error::Km(ErrorCode::ATTESTATION_IDS_NOT_PROVISIONED)) => {}
+            _ => {
+                // Not an error we can handle by retrying.
+                return result;
+            }
+        }
+
+        // The aforementioned errors might occur because the IMEI values are in the wrong order
+        // which could only occur on KM instances that support multiple IMEIs in the first place.
+        if self.hw_info.versionNumber < 300
+            || self.hw_info.versionNumber >= 500
+            || !params.iter().any(|p| crate::utils::is_imei_attestation_tag(p.tag))
+        {
+            return result;
+        }
+
+        // Try swapping the IMEI parameters, for those that are present.
+        let swapped_params: Vec<KeyParameter> = params
+            .iter()
+            .map(|p| {
+                let mut new_p = p.clone();
+                match new_p.tag {
+                    Tag::ATTESTATION_ID_IMEI => {
+                        new_p.tag = Tag::ATTESTATION_ID_SECOND_IMEI;
+                    }
+                    Tag::ATTESTATION_ID_SECOND_IMEI => {
+                        new_p.tag = Tag::ATTESTATION_ID_IMEI;
+                    }
+                    _ => {}
+                }
+                new_p
+            })
+            .collect();
+        map_km_error({
+            let _wp = self.watch_millis(
+                concat!(
+                    "KeystoreSecurityLevel::generate_key: calling ",
+                    "IKeyMintDevice::generateKey, (retrying with swapped IMEIs)."
+                ),
+                5000,
+            );
+            self.keymint.generateKey(&swapped_params, attest_key)
+        })
+    }
+
     fn generate_key(
         &self,
         key: &KeyDescriptor,
@@ -655,16 +721,7 @@ impl KeystoreSecurityLevel {
                             attestKeyParams: vec![],
                             issuerSubjectName: issuer_subject.clone(),
                         });
-                        map_km_error({
-                            let _wp = self.watch_millis(
-                                concat!(
-                                    "KeystoreSecurityLevel::generate_key (UserGenerated): ",
-                                    "calling IKeyMintDevice::generate_key"
-                                ),
-                                5000, // Generate can take a little longer.
-                            );
-                            self.keymint.generateKey(&params, attest_key.as_ref())
-                        })
+                        self.generate_key_and_retry_on_att_id_mismatch(&params, attest_key.as_ref())
                     },
                 )
                 .context(ks_err!(
@@ -675,21 +732,15 @@ impl KeystoreSecurityLevel {
                 .map(|(result, _)| result),
             Some(AttestationKeyInfo::RkpdProvisioned { attestation_key, attestation_certs }) => {
                 self.upgrade_rkpd_keyblob_if_required_with(&attestation_key.keyBlob, &[], |blob| {
-                    map_km_error({
-                        let _wp = self.watch_millis(
-                            concat!(
-                                "KeystoreSecurityLevel::generate_key (RkpdProvisioned): ",
-                                "calling IKeyMintDevice::generate_key",
-                            ),
-                            5000, // Generate can take a little longer.
-                        );
-                        let dynamic_attest_key = Some(AttestationKey {
-                            keyBlob: blob.to_vec(),
-                            attestKeyParams: vec![],
-                            issuerSubjectName: attestation_key.issuerSubjectName.clone(),
-                        });
-                        self.keymint.generateKey(&params, dynamic_attest_key.as_ref())
-                    })
+                    let dynamic_attest_key = Some(AttestationKey {
+                        keyBlob: blob.to_vec(),
+                        attestKeyParams: vec![],
+                        issuerSubjectName: attestation_key.issuerSubjectName.clone(),
+                    });
+                    self.generate_key_and_retry_on_att_id_mismatch(
+                        &params,
+                        dynamic_attest_key.as_ref(),
+                    )
                 })
                 .context(ks_err!(
                     "While generating Key {:?} with remote \
@@ -725,17 +776,7 @@ impl KeystoreSecurityLevel {
                     result
                 })
             }
-            None => map_km_error({
-                let _wp = self.watch_millis(
-                    concat!(
-                        "KeystoreSecurityLevel::generate_key (No attestation key): ",
-                        "calling IKeyMintDevice::generate_key",
-                    ),
-                    5000, // Generate can take a little longer.
-                );
-                self.keymint.generateKey(&params, None)
-            })
-            .context(ks_err!(
+            None => self.generate_key_and_retry_on_att_id_mismatch(&params, None).context(ks_err!(
                 "While generating without a provided \
                  attestation key and params: {:?}.",
                 log_security_safe_params(&params)

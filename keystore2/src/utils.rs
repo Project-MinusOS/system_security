@@ -175,6 +175,11 @@ pub fn is_device_id_attestation_tag(tag: Tag) -> bool {
     )
 }
 
+/// This function checks whether a given tag corresponds to the access of any IMEI attestation.
+pub fn is_imei_attestation_tag(tag: Tag) -> bool {
+    matches!(tag, Tag::ATTESTATION_ID_IMEI | Tag::ATTESTATION_ID_SECOND_IMEI)
+}
+
 /// This function checks whether the calling app has the Android permissions needed to attest device
 /// identifiers. It throws an error if the permissions cannot be verified or if the caller doesn't
 /// have the right permissions. Otherwise it returns silently.

@@ -22,6 +22,16 @@ package {
     default_applicable_licenses: ["system_security_license"],
 }
 
+// TODO(b/402766978): Delete this bindgen rule and use the actual rust library.
+rust_bindgen {
+    name: "libandroid_api_level_bindgen",
+    crate_name: "android_api_level_bindgen",
+    wrapper_src: "wrapper.h", // Used to wrap android/api-level.h
+    source_stem: "bindings",
+    clippy_lints: "none", // Suppress clippy lints for generated code
+    lints: "none", // Suppress rustc lints for generated code
+}
+
 rust_test {
     name: "keystore2_client_tests",
     defaults: [
@@ -42,6 +52,7 @@ rust_test {
         "android.security.authorization-rust",
         "android.security.maintenance-rust",
         "libaconfig_android_hardware_biometrics_rust",
+        "libandroid_api_level_bindgen",
         "libandroid_logger",
         "libandroid_security_flags_rust",
         "libanyhow",

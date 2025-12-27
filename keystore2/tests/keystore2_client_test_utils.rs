@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use android_api_level_bindgen as api_level;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     BlockMode::BlockMode, Digest::Digest, ErrorCode::ErrorCode,
     KeyParameterValue::KeyParameterValue, KeyPurpose::KeyPurpose, PaddingMode::PaddingMode,
@@ -117,6 +118,12 @@ pub fn skip_device_id_attest_tests() -> bool {
     get_vsr_api_level() < 34 && key_generations::is_gsi()
 }
 
+/// Skip tests that check functionality around the second attested IMEI value.
+pub fn skip_device_id_second_imei_tests() -> bool {
+    // API level 34 is Android U, which has KeyMint 3
+    get_first_vsr_api_level() < 34
+}
+
 #[macro_export]
 macro_rules! skip_test_if_no_app_attest_key_feature {
     () => {
@@ -139,6 +146,16 @@ macro_rules! skip_test_if_no_device_id_attestation_feature {
 macro_rules! skip_device_id_attestation_tests {
     () => {
         if skip_device_id_attest_tests() {
+            return;
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! skip_device_id_attestation_second_imei_tests {
+    () => {
+        if skip_device_id_second_imei_tests() {
+            // No support for second IMEI attestation, even if there is a second IMEI.
             return;
         }
     };
@@ -569,6 +586,43 @@ fn get_integer_system_prop(name: &str) -> Option<i32> {
     val.parse::<i32>().ok()
 }
 
+/// Returns the first Vendor Security Patch level API.
+/// The returned value can be:
+/// - The API level (e.g., 30, 31, 32, 33, 34) for older releases.
+/// - A date-based version number (e.g., 202404, 202504) for newer releases.
+pub fn get_first_vsr_api_level() -> i32 {
+    if let Some(first_vendor_api_level) = get_integer_system_prop("ro.board.first_api_level") {
+        return first_vendor_api_level;
+    }
+
+    if let Some(first_product_api_level) = get_integer_system_prop("ro.product.first_api_level") {
+        return get_vendor_api_level_of(first_product_api_level);
+    }
+    // SAFETY: A harmless SDK level lookup.
+    unsafe { api_level::android_get_device_api_level() }
+}
+
+/// Handles mapping SDK API levels to vendor API levels due to the naming divergence in Android V.
+fn get_vendor_api_level_of(sdk_api_level: i32) -> i32 {
+    if sdk_api_level < api_level::__ANDROID_API_V__ as i32 {
+        return sdk_api_level;
+    }
+
+    // 10000 is an Android placeholder version value for current development.
+    if sdk_api_level < api_level::__ANDROID_API_FUTURE__ as i32 {
+        // Corresponds to Android 15 (Vanilla Ice Cream) and later, but before the next major
+        // unreleased version.
+        return 202404 + ((sdk_api_level - (api_level::__ANDROID_API_V__ as i32)) * 100);
+    }
+
+    // A value greater than API_FUTURE implies an impossible version.
+    -1
+}
+
+/// Returns the Vendor Security Patch level API.
+/// The returned value can be:
+/// - The API level (e.g., 30, 31, 32, 33, 34) for older releases.
+/// - A date-based version number (e.g., 202404, 202504) for newer releases.
 pub fn get_vsr_api_level() -> i32 {
     if let Some(api_level) = get_integer_system_prop("ro.vendor.api_level") {
         return api_level;
