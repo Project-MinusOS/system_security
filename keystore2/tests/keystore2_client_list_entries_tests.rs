@@ -208,7 +208,7 @@ fn keystore2_list_entries_with_long_aliases_success() {
             imported_key_aliases.insert(alias.clone());
 
             let result = key_generations::import_aes_key(&sl, Domain::APP, -1, Some(alias));
-            assert!(result.is_ok());
+            assert!(result.is_ok(), "unexpected failure {result:?}");
         }
 
         // b/222287335 Limiting Keystore `listEntries` API to return subset of the Keystore

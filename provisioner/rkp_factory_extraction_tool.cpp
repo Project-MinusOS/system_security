@@ -134,6 +134,13 @@ void getCsrForIRpc(const char* descriptor, const char* name, IRemotelyProvisione
     }
 }
 
+// Record the fact that this IRemotelyProvisionedComponent instance was found by removing it
+// from the sets in the context.
+bool checkAndConsumeInstance(CsrValidationConfig* csrValidationConfig, const std::string& name) {
+    return csrValidationConfig->require_all_hal_instances_irpc_names ||
+           csrValidationConfig->hal_instances_irpc_names.erase(name) > 0;
+}
+
 // Callback for AServiceManager_forEachDeclaredInstance that writes out a CSR
 // for every IRemotelyProvisionedComponent.
 void getCsrForInstance(const char* name, void* context) {
@@ -145,11 +152,7 @@ void getCsrForInstance(const char* name, void* context) {
     }
 
     auto csrValidationConfig = static_cast<CsrValidationConfig*>(context);
-    // Record the fact that this IRemotelyProvisionedComponent instance was found by removing it
-    // from the sets in the context.
-    bool outputCert = csrValidationConfig->require_all_hal_instances_irpc_names ||
-                      csrValidationConfig->hal_instances_irpc_names.erase(name) > 0;
-    if (!outputCert) {
+    if (!checkAndConsumeInstance(csrValidationConfig, name)) {
         return;
     }
 
@@ -198,6 +201,10 @@ int main(int argc, char** argv) {
 
     // Append drm CSRs
     for (auto const& [name, irpc] : android::mediadrm::getDrmRemotelyProvisionedComponents()) {
+        if (!checkAndConsumeInstance(&csrValidationConfig, name)) {
+            continue;
+        }
+
         bool allowDegenerate = csrValidationConfig.allow_degenerate_irpc_names.count(name) != 0;
         csrValidationConfig.allow_degenerate_irpc_names.erase(name);
         auto requireUdsCerts = csrValidationConfig.require_uds_certs_irpc_names.count(name) != 0;

@@ -134,10 +134,14 @@ fn generate_key_and_perform_op_with_max_usage_limit(
         assert_eq!(usage_count, max_usage_count);
     }
     if max_usage_count == 1 {
-        assert!(matches!(
-            auth.securityLevel,
-            SecurityLevel::KEYSTORE | SecurityLevel::TRUSTED_ENVIRONMENT
-        ));
+        assert!(
+            matches!(
+                auth.securityLevel,
+                SecurityLevel::KEYSTORE | SecurityLevel::TRUSTED_ENVIRONMENT
+            ),
+            "unexpected security level {:?}",
+            auth.securityLevel
+        );
     } else {
         assert_eq!(auth.securityLevel, SecurityLevel::KEYSTORE);
     }
@@ -177,7 +181,7 @@ fn keystore2_gen_key_auth_active_datetime_test_success() {
         &authorizations::AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(Digest::SHA_2_256),
         alias,
     );
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
     delete_app_key(&sl.keystore2, alias).unwrap();
 }
 
@@ -237,7 +241,7 @@ fn keystore2_gen_key_auth_future_origination_expire_datetime_test_success() {
         &authorizations::AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(Digest::SHA_2_256),
         alias,
     );
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
     delete_app_key(&sl.keystore2, alias).unwrap();
 }
 
@@ -693,7 +697,7 @@ fn keystore2_gen_key_auth_app_data_app_id_test_success() {
             .app_id(b"app-id".to_vec()),
         alias,
     );
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
     delete_app_key(&sl.keystore2, alias).unwrap();
 }
 
@@ -861,7 +865,7 @@ fn keystore2_gen_attested_key_auth_app_id_app_data_test_success() {
         b"entropy",
     );
 
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
     delete_app_key(&sl.keystore2, alias).unwrap();
     delete_app_key(&sl.keystore2, attest_alias).unwrap();
 }
