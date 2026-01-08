@@ -327,10 +327,7 @@ impl Drop for ConcurrentOperation {
 
 /// Get attestation key from RKPD.
 pub fn get_rkpd_attestation_key(rpc_name: &str, caller_uid: u32) -> Result<RemotelyProvisionedKey> {
-    let _guard: ConcurrentOperation;
-    if android_security_flags::thread_safe_key_generation() {
-        _guard = ConcurrentOperation::start()?;
-    }
+    let _guard: ConcurrentOperation = ConcurrentOperation::start()?;
 
     tokio_rt().block_on(get_rkpd_attestation_key_async(rpc_name, caller_uid))
 }
@@ -341,10 +338,7 @@ pub fn store_rkpd_attestation_key(
     key_blob: &[u8],
     upgraded_blob: &[u8],
 ) -> Result<()> {
-    let _guard: ConcurrentOperation;
-    if android_security_flags::thread_safe_key_generation() {
-        _guard = ConcurrentOperation::start()?;
-    }
+    let _guard: ConcurrentOperation = ConcurrentOperation::start()?;
 
     tokio_rt().block_on(store_rkpd_attestation_key_async(rpc_name, key_blob, upgraded_blob))
 }

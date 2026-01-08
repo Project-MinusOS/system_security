@@ -39,6 +39,7 @@ flag {
   description: "Makes the FEATURE_DEVICE_ID_ATTESTATION PackageManager feature public"
   bug: "432211581"
   is_fixed_read_only: true
+  is_exported: true
 }
 
 flag {
@@ -55,6 +56,7 @@ flag {
   description: "Enable support for ML-DSA-65 and ML-DSA-87 in the AndroidKeyStore provider"
   bug: "395069350"
   is_fixed_read_only: true
+  is_exported: true
 }
 
 flag {
