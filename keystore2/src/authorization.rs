@@ -121,6 +121,9 @@ impl AuthorizationManager {
             auth_token.authenticatorType.0,
             auth_token.timestamp.milliSeconds,
         );
+        if auth_token.userId == 0 {
+            error!("Auth token has zero GK SID, indicating an authenticator problem");
+        }
 
         ENFORCEMENTS.add_auth_token(auth_token.clone());
         Ok(())
@@ -153,6 +156,9 @@ impl AuthorizationManager {
         );
         check_keystore_permission(KeystorePerm::Lock)
             .context(ks_err!("caller missing Lock permission"))?;
+        if unlocking_sids.iter().any(|sid| sid.0 == 0) {
+            error!("Biometric-unlocking SIDs includes a zero SID, indicating a biometric framework problem");
+        }
         ENFORCEMENTS.set_device_locked(user, true);
         let mut skm = SUPER_KEY.write().unwrap();
         DB.with(|db| {
