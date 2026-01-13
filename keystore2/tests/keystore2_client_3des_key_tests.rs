@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::keystore2_client_test_utils::{
-    delete_app_key, get_vsr_api_level, perform_sample_sym_key_decrypt_op,
-    perform_sample_sym_key_encrypt_op, SAMPLE_PLAIN_TEXT,
+    delete_app_key, perform_sample_sym_key_decrypt_op, perform_sample_sym_key_encrypt_op,
+    SAMPLE_PLAIN_TEXT,
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, ErrorCode::ErrorCode, KeyPurpose::KeyPurpose,
@@ -23,7 +23,10 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
 use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor,
 };
-use keystore2_test_utils::{authorizations, key_generations, key_generations::Error, SecLevel};
+use keystore2_test_utils::{
+    authorizations, key_generations, key_generations::get_vsr_api_level, key_generations::Error,
+    SecLevel,
+};
 
 /// Generate a 3DES key. Create encryption and decryption operations using the generated key.
 fn create_3des_key_and_operation(

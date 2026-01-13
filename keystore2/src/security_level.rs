@@ -828,10 +828,10 @@ impl KeystoreSecurityLevel {
             .and_then(|p| match &p.value {
                 KeyParameterValue::Algorithm(Algorithm::AES)
                 | KeyParameterValue::Algorithm(Algorithm::HMAC)
-                | KeyParameterValue::Algorithm(Algorithm::TRIPLE_DES)
-                | KeyParameterValue::Algorithm(Algorithm::ML_DSA) => Ok(KeyFormat::RAW),
+                | KeyParameterValue::Algorithm(Algorithm::TRIPLE_DES) => Ok(KeyFormat::RAW),
                 KeyParameterValue::Algorithm(Algorithm::RSA)
-                | KeyParameterValue::Algorithm(Algorithm::EC) => Ok(KeyFormat::PKCS8),
+                | KeyParameterValue::Algorithm(Algorithm::EC)
+                | KeyParameterValue::Algorithm(Algorithm::ML_DSA) => Ok(KeyFormat::PKCS8),
                 v => Err(error::Error::Km(ErrorCode::INVALID_ARGUMENT))
                     .context(ks_err!("Unknown Algorithm {:?}.", v)),
             })

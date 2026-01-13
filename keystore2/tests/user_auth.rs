@@ -15,7 +15,7 @@
 //! Tests for user authentication interactions (via `IKeystoreAuthorization`).
 
 use crate::keystore2_client_test_utils::{
-    BarrierReached, BarrierReachedWithData, get_vsr_api_level
+    BarrierReached, BarrierReachedWithData,
 };
 use android_security_authorization::aidl::android::security::authorization::{
     IKeystoreAuthorization::IKeystoreAuthorization
@@ -47,6 +47,7 @@ use keystore2_test_utils::{
 use log::{warn, info};
 use rustutils::android::users::AID_USER_OFFSET;
 use std::{time::Duration, thread::sleep};
+use keystore2_test_utils::key_generations::get_vsr_api_level;
 
 /// Test user ID.
 const TEST_USER_ID: i32 = 100;

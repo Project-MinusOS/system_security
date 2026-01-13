@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::keystore2_client_test_utils::{
-    delete_app_key, execute_op_run_as_child, get_vsr_api_level, perform_sample_sign_operation,
-    BarrierReached, ForcedOp, TestOutcome,
+    delete_app_key, execute_op_run_as_child, perform_sample_sign_operation, BarrierReached,
+    ForcedOp, TestOutcome,
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, Digest::Digest, EcCurve::EcCurve, ErrorCode::ErrorCode,
@@ -25,7 +25,8 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     ResponseCode::ResponseCode,
 };
 use keystore2_test_utils::{
-    authorizations, get_keystore_service, key_generations, key_generations::Error, run_as, SecLevel,
+    authorizations, get_keystore_service, key_generations, key_generations::get_vsr_api_level,
+    key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::{getuid, Gid, Uid};
 use rustutils::android::users::AID_USER_OFFSET;

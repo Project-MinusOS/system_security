@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
-    delete_app_key, get_vsr_api_level, perform_sample_sign_operation, ForcedOp,
-};
+use crate::keystore2_client_test_utils::{delete_app_key, perform_sample_sign_operation, ForcedOp};
 use crate::skip_on_vendor_api_level_android_t_and_earlier;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Digest::Digest, ErrorCode::ErrorCode, KeyPurpose::KeyPurpose, PaddingMode::PaddingMode,
@@ -22,7 +20,10 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
 use android_system_keystore2::aidl::android::system::keystore2::{
     CreateOperationResponse::CreateOperationResponse, Domain::Domain,
 };
-use keystore2_test_utils::{authorizations, key_generations, key_generations::Error, SecLevel};
+use keystore2_test_utils::{
+    authorizations, key_generations, key_generations::get_vsr_api_level, key_generations::Error,
+    SecLevel,
+};
 
 /// This macro is used for creating signing key operation tests using digests and paddings
 /// for various key sizes.

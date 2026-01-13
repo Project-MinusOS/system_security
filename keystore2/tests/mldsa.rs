@@ -65,9 +65,16 @@ fn test_mldsa_generate_sign() {
     delete_app_key(&sl.keystore2, alias).unwrap();
 }
 
-#[test]
-fn test_mldsa_import_sign() {
-    const MLDSA_SEED: [u8; 32] = [
+fn mldsa_import_sign(add_variant_tag: bool) {
+    const MLDSA_PKCS8_KEY: [u8; 54] = [
+        0x30, 0x34, // SEQUENCE len x34 {
+        0x02, 0x01, 0x00, // INTEGER 0 (Version)
+        0x30, 0x0b, // SEQUENCE len 11 (privateKeyAlgorithm) {
+        0x06, 0x09, // OBJECT_IDENTIFIER len 9
+        0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12, //  2.16.840.1.101.3.4.3.18
+        // }
+        0x04, 0x22, // OCTET STRING len 34
+        0x80, 0x20, // tag 0 primitive len 32
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
         0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
         0x1e, 0x1f,
@@ -79,13 +86,16 @@ fn test_mldsa_import_sign() {
     }
 
     let alias = "imported_mldsa_key";
-    let import_params = AuthSetBuilder::new()
+    let mut import_params = AuthSetBuilder::new()
         .no_auth_required()
         .algorithm(Algorithm::ML_DSA)
         .purpose(KeyPurpose::SIGN)
         .purpose(KeyPurpose::VERIFY)
-        .digest(Digest::NONE)
-        .mldsa_variant(MlDsaVariant::ML_DSA_65);
+        .digest(Digest::NONE);
+
+    if add_variant_tag {
+        import_params = import_params.mldsa_variant(MlDsaVariant::ML_DSA_65);
+    }
 
     let metadata = sl
         .binder
@@ -99,7 +109,7 @@ fn test_mldsa_import_sign() {
             None,
             &import_params,
             0,
-            &MLDSA_SEED,
+            &MLDSA_PKCS8_KEY,
         )
         .unwrap();
 
@@ -116,6 +126,19 @@ fn test_mldsa_import_sign() {
     assert_eq!(Ok(()), key_generations::map_ks_error(perform_sample_sign_operation(&op)));
 
     delete_app_key(&sl.keystore2, alias).unwrap();
+}
+
+#[test]
+fn test_mldsa_import_sign_with_variant_tag() {
+    // Tag::ML_DSA_VARIANT is not required for PKCS#8 import, but it must match
+    // the key's variant if provided.
+    mldsa_import_sign(/* add_variant_tag= */ true);
+}
+
+#[test]
+fn test_mldsa_import_sign_without_variant_tag() {
+    // Tag::ML_DSA_VARIANT is not required for PKCS#8 import.
+    mldsa_import_sign(/* add_variant_tag= */ false);
 }
 
 #[test]
