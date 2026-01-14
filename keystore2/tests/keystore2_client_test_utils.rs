@@ -27,6 +27,8 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 use binder::wait_for_interface;
 use keystore2_test_utils::{
     authorizations, key_generations,
+    key_generations::get_integer_system_prop,
+    key_generations::get_vsr_api_level,
     key_generations::Error,
     run_as,
     run_as::{ChannelReader, ChannelWriter},
@@ -577,15 +579,6 @@ pub fn get_system_prop(name: &str) -> Vec<u8> {
     }
 }
 
-fn get_integer_system_prop(name: &str) -> Option<i32> {
-    let val = get_system_prop(name);
-    if val.is_empty() {
-        return None;
-    }
-    let val = std::str::from_utf8(&val).ok()?;
-    val.parse::<i32>().ok()
-}
-
 /// Returns the first Vendor Security Patch level API.
 /// The returned value can be:
 /// - The API level (e.g., 30, 31, 32, 33, 34) for older releases.
@@ -617,28 +610,6 @@ fn get_vendor_api_level_of(sdk_api_level: i32) -> i32 {
 
     // A value greater than API_FUTURE implies an impossible version.
     -1
-}
-
-/// Returns the Vendor Security Patch level API.
-/// The returned value can be:
-/// - The API level (e.g., 30, 31, 32, 33, 34) for older releases.
-/// - A date-based version number (e.g., 202404, 202504) for newer releases.
-pub fn get_vsr_api_level() -> i32 {
-    if let Some(api_level) = get_integer_system_prop("ro.vendor.api_level") {
-        return api_level;
-    }
-
-    let vendor_api_level = get_integer_system_prop("ro.board.api_level")
-        .or_else(|| get_integer_system_prop("ro.board.first_api_level"));
-    let product_api_level = get_integer_system_prop("ro.product.first_api_level")
-        .or_else(|| get_integer_system_prop("ro.build.version.sdk"));
-
-    match (vendor_api_level, product_api_level) {
-        (Some(v), Some(p)) => std::cmp::min(v, p),
-        (Some(v), None) => v,
-        (None, Some(p)) => p,
-        _ => panic!("Could not determine VSR API level"),
-    }
 }
 
 /// Determines whether the SECOND-IMEI can be used as device attest-id.

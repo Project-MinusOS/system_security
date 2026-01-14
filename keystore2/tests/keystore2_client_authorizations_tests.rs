@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::keystore2_client_test_utils::{
-    app_attest_key_feature_exists, delete_app_key, get_vsr_api_level,
+    app_attest_key_feature_exists, delete_app_key,
     perform_sample_asym_sign_verify_op, perform_sample_hmac_sign_verify_op,
     perform_sample_sym_key_decrypt_op, perform_sample_sym_key_encrypt_op,
     verify_certificate_serial_num, verify_certificate_subject_name, SAMPLE_PLAIN_TEXT,
@@ -40,7 +40,7 @@ use keystore_attestation::{AttestationExtension, ATTESTATION_EXTENSION_OID};
 use keystore2_test_utils::ffi_test_utils::get_value_from_attest_record;
 use keystore2_test_utils::{
     authorizations, get_keystore_auth_service, key_generations,
-    key_generations::Error, SecLevel,
+    key_generations::Error, key_generations::get_vsr_api_level, SecLevel,
 };
 use openssl::bn::{BigNum, MsbOption};
 use openssl::x509::X509NameBuilder;

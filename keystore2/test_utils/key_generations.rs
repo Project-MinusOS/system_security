@@ -56,6 +56,8 @@ const TEE_KEYMINT_RKP_ONLY: &str = "remote_provisioning.tee.rkp_only";
 
 const STRONGBOX_KEYMINT_RKP_ONLY: &str = "remote_provisioning.strongbox.rkp_only";
 
+const GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL: i32 = 202604;
+
 /// Allowed tags in generated/imported key authorizations.
 /// See hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/Tag.aidl for the
 /// list feature tags.
@@ -433,15 +435,52 @@ pub fn is_gsi() -> bool {
     PathBuf::from("/system/system_ext/etc/init/init.gsi.rc").as_path().is_file()
 }
 
+/// Get the given system property value as integer.
+pub fn get_integer_system_prop(name: &str) -> Option<i32> {
+    let val = get_system_prop(name);
+    if val.is_empty() {
+        return None;
+    }
+    let val = std::str::from_utf8(&val).ok()?;
+    val.parse::<i32>().ok()
+}
+
+/// Determines VSR API Level.
+pub fn get_vsr_api_level() -> i32 {
+    if let Some(api_level) = get_integer_system_prop("ro.vendor.api_level") {
+        return api_level;
+    }
+
+    let vendor_api_level = get_integer_system_prop("ro.board.api_level")
+        .or_else(|| get_integer_system_prop("ro.board.first_api_level"));
+    let product_api_level = get_integer_system_prop("ro.product.first_api_level")
+        .or_else(|| get_integer_system_prop("ro.build.version.sdk"));
+
+    match (vendor_api_level, product_api_level) {
+        (Some(v), Some(p)) => std::cmp::min(v, p),
+        (Some(v), None) => v,
+        (None, Some(p)) => p,
+        _ => panic!("Could not determine VSR API level"),
+    }
+}
+
 /// Determines whether the test is on a GSI build where the rkp-only status of the device is
-/// unknown. GSI replaces the values for remote_prov_prop properties (since they’re
+/// unknown.
+/// BEFORE 26Q2: GSI replaces the values for remote_prov_prop properties (since they’re
 /// system_internal_prop properties), so on GSI the properties are not reliable indicators of
-/// whether StrongBox/TEE is RKP-only or not.
+/// whether StrongBox/TEE is RKP-only or not. Vendor code cannot set appropriate RKP properties
+/// prior to GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL (26Q2).
+/// 26Q2 ONWARD: CL ag/37165459 allows vendor init to set the remote provisioning
+/// properties. This change enables Remote Key Provisioning (RKP) functionality on GSI.
 pub fn is_rkp_only_unknown_on_gsi(sec_level: SecurityLevel) -> bool {
     if sec_level == SecurityLevel::TRUSTED_ENVIRONMENT {
-        is_gsi() && get_system_prop(TEE_KEYMINT_RKP_ONLY).is_empty()
+        is_gsi()
+            && get_vsr_api_level() < GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL
+            && get_system_prop(TEE_KEYMINT_RKP_ONLY).is_empty()
     } else {
-        is_gsi() && get_system_prop(STRONGBOX_KEYMINT_RKP_ONLY).is_empty()
+        is_gsi()
+            && get_vsr_api_level() < GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL
+            && get_system_prop(STRONGBOX_KEYMINT_RKP_ONLY).is_empty()
     }
 }
 

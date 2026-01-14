@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crate::keystore2_client_test_utils::{
-    delete_app_key, encrypt_secure_key, encrypt_transport_key, get_vsr_api_level,
-    perform_sample_asym_sign_verify_op, perform_sample_hmac_sign_verify_op,
-    perform_sample_sym_key_decrypt_op, perform_sample_sym_key_encrypt_op, SAMPLE_PLAIN_TEXT,
+    delete_app_key, encrypt_secure_key, encrypt_transport_key, perform_sample_asym_sign_verify_op,
+    perform_sample_hmac_sign_verify_op, perform_sample_sym_key_decrypt_op,
+    perform_sample_sym_key_encrypt_op, SAMPLE_PLAIN_TEXT,
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, Digest::Digest, EcCurve::EcCurve,
@@ -30,7 +30,10 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 use keystore2_test_utils::ffi_test_utils::{
     create_wrapped_key, create_wrapped_key_additional_auth_data,
 };
-use keystore2_test_utils::{authorizations, key_generations, key_generations::Error, SecLevel};
+use keystore2_test_utils::{
+    authorizations, key_generations, key_generations::get_vsr_api_level, key_generations::Error,
+    SecLevel,
+};
 use nix::unistd::getuid;
 use openssl::rand::rand_bytes;
 use openssl::x509::X509;
