@@ -48,6 +48,7 @@ flag {
   description: "Apply limits of #keys per-uid"
   bug: "395078130"
   is_fixed_read_only: true
+  is_exported: true
 }
 
 flag {
