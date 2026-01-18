@@ -560,33 +560,28 @@ impl KeystoreSecurityLevel {
         // The per-uid limits for keys are based on the app's target SDK.
         // Determining the target SDK involve PackageManager round trips, so only
         // check target SDK if necessary.
-        let too_many_keys = if count < API_37_PER_UID_KEY_LIMIT {
+        if count < API_37_PER_UID_KEY_LIMIT {
             // Below the lower limit => definitely OK.
-            false
-        } else if count >= DEFAULT_PER_UID_KEY_LIMIT {
-            // Above the higher limit => definitely not OK.
-            true
-        } else {
-            // In between => check target SDK to determine limit.
-            match target_sdk_for_uid(uid) {
-                Some(target_sdk) if target_sdk >= 37 => {
-                    // Later target SDK has a lower limit.
-                    true
-                }
-                _ => {
-                    // Otherwise the higher limit applies.
-                    false
-                }
-            }
-        };
-
-        if too_many_keys {
-            error!("failing key creation for {uid:?} with excessive ({count}) keys",);
-            return Err(error::Error::Rc(ResponseCode::TOO_MANY_APP_KEYS)).context(ks_err!(
-                "failed key creation as {uid:?} has too many ({count}) existing keys",
-            ));
+            return Ok(());
         }
-        Ok(())
+        let targets_sdk37 = matches!(target_sdk_for_uid(uid), Some(target_sdk) if target_sdk >= 37);
+        let limit =
+            if targets_sdk37 { API_37_PER_UID_KEY_LIMIT } else { DEFAULT_PER_UID_KEY_LIMIT };
+
+        if count >= limit {
+            error!("failing key creation for {uid:?} with excessive ({count}) keys",);
+            if targets_sdk37 {
+                Err(error::Error::Rc(ResponseCode::TOO_MANY_APP_KEYS_SDK37)).context(ks_err!(
+                    "failed key creation as {uid:?} (targeting SDK37+) has too many ({count}) existing keys",
+                ))
+            } else {
+                Err(error::Error::Rc(ResponseCode::TOO_MANY_APP_KEYS)).context(ks_err!(
+                    "failed key creation as {uid:?} has too many ({count}) existing keys",
+                ))
+            }
+        } else {
+            Ok(())
+        }
     }
 
     // Generates a key and retries with swapped IMEI if an attestation ID mismatch error occurs.
