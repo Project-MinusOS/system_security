@@ -206,7 +206,7 @@ CborResult<Array> composeCertificateRequestV3(const std::vector<uint8_t>& csr) {
 }
 
 CborResult<Array> getCsrV3(std::string_view componentName, IRemotelyProvisionedComponent* irpc,
-                           bool selfTest, bool allowDegenerate, bool requireUdsCerts) {
+                           bool selfTest, bool strict, bool allowDegenerate, bool requireUdsCerts) {
     std::vector<uint8_t> csr;
     std::vector<MacedPublicKey> emptyKeys;
     const std::vector<uint8_t> challenge = generateChallenge();
@@ -228,8 +228,8 @@ CborResult<Array> getCsrV3(std::string_view componentName, IRemotelyProvisionedC
 
     if (selfTest) {
         auto result = verifyFactoryCsr(/*keysToSign=*/cppbor::Array(), csr, hwInfo,
-                                       std::string(componentName), challenge, allowDegenerate,
-                                       requireUdsCerts);
+                                       std::string(componentName), challenge, strict,
+                                       allowDegenerate, requireUdsCerts);
         if (!result) {
             std::cerr << "Self test failed for IRemotelyProvisionedComponent '" << componentName
                       << "'. Error message: '" << result.message() << "'." << std::endl;
@@ -241,7 +241,7 @@ CborResult<Array> getCsrV3(std::string_view componentName, IRemotelyProvisionedC
 }
 
 CborResult<Array> getCsr(std::string_view componentName, IRemotelyProvisionedComponent* irpc,
-                         bool selfTest, bool allowDegenerate, bool requireUdsCerts) {
+                         bool selfTest, bool strict, bool allowDegenerate, bool requireUdsCerts) {
     RpcHardwareInfo hwInfo;
     auto status = irpc->getHardwareInfo(&hwInfo);
     if (!status.isOk()) {
@@ -259,7 +259,7 @@ CborResult<Array> getCsr(std::string_view componentName, IRemotelyProvisionedCom
         }
         return getCsrV1(componentName, irpc);
     } else {
-        return getCsrV3(componentName, irpc, selfTest, allowDegenerate, requireUdsCerts);
+        return getCsrV3(componentName, irpc, selfTest, strict, allowDegenerate, requireUdsCerts);
     }
 }
 

@@ -22,7 +22,7 @@ use crate::{AsCborValue, CborError, Value};
 /// Encoded as a signed 64-bit integer to match the AIDL type (`long milliSeconds` in
 /// `android.hardware.security.secureclock.Timestamp`) that it corresponds to.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MillisecondsSinceEpoch(pub i64);
 
 impl AsCborValue for MillisecondsSinceEpoch {
