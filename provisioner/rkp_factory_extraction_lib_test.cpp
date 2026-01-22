@@ -276,9 +276,9 @@ TEST(LibRkpFactoryExtractionTests, GetCsrWithV2Hal) {
                         SetArgPointee<6>(kFakeMac),             //
                         Return(ByMove(ScopedAStatus::ok()))));  //
 
-    auto [csr, csrErrMsg] =
-        getCsr("mock component name", mockRpc.get(),
-               /*selfTest=*/false, /*allowDegenerate=*/true, /*requireUdsCerts=*/false);
+    auto [csr, csrErrMsg] = getCsr("mock component name", mockRpc.get(),
+                                   /*selfTest=*/false, /*strict=*/true, /*allowDegenerate=*/true,
+                                   /*requireUdsCerts=*/false);
     ASSERT_THAT(csr, NotNull()) << csrErrMsg;
     ASSERT_THAT(csr->asArray(), Pointee(Property(&Array::size, Eq(4))));
 
@@ -347,9 +347,9 @@ TEST(LibRkpFactoryExtractionTests, GetCsrWithV3Hal) {
         .WillOnce(DoAll(SaveArg<1>(&challenge), SetArgPointee<2>(kCsr),
                         Return(ByMove(ScopedAStatus::ok()))));
 
-    auto [csr, csrErrMsg] =
-        getCsr("mock component name", mockRpc.get(),
-               /*selfTest=*/false, /*allowDegenerate=*/true, /*requireUdsCerts=*/false);
+    auto [csr, csrErrMsg] = getCsr("mock component name", mockRpc.get(),
+                                   /*selfTest=*/false, /*strict=*/true, /*allowDegenerate=*/true,
+                                   /*requireUdsCerts=*/false);
     ASSERT_THAT(csr, NotNull()) << csrErrMsg;
     ASSERT_THAT(csr, Pointee(Property(&Array::size, Eq(5))));
 
@@ -382,9 +382,9 @@ TEST(LibRkpFactoryExtractionTests, requireUdsCerts) {
         .WillOnce(DoAll(SaveArg<1>(&challenge), SetArgPointee<2>(csrEncoded),
                         Return(ByMove(ScopedAStatus::ok()))));
 
-    auto [csr, csrErrMsg] =
-        getCsr("default", mockRpc.get(),
-               /*selfTest=*/true, /*allowDegenerate=*/false, /*requireUdsCerts=*/true);
+    auto [csr, csrErrMsg] = getCsr("default", mockRpc.get(),
+                                   /*selfTest=*/true, /*strict=*/false, /*allowDegenerate=*/false,
+                                   /*requireUdsCerts=*/true);
     ASSERT_EQ(csr, nullptr);
     ASSERT_THAT(csrErrMsg, testing::HasSubstr("UdsCerts are required"));
 }
@@ -406,9 +406,9 @@ TEST(LibRkpFactoryExtractionTests, dontRequireUdsCerts) {
         .WillOnce(DoAll(SaveArg<1>(&challenge), SetArgPointee<2>(csrEncoded),
                         Return(ByMove(ScopedAStatus::ok()))));
 
-    auto [csr, csrErrMsg] =
-        getCsr("default", mockRpc.get(),
-               /*selfTest=*/true, /*allowDegenerate=*/false, /*requireUdsCerts=*/false);
+    auto [csr, csrErrMsg] = getCsr("default", mockRpc.get(),
+                                   /*selfTest=*/true, /*strict=*/true, /*allowDegenerate=*/false,
+                                   /*requireUdsCerts=*/false);
     ASSERT_EQ(csr, nullptr);
     ASSERT_THAT(csrErrMsg, testing::HasSubstr("challenges do not match"));
 }

@@ -35,14 +35,18 @@
 using aidl::android::hardware::drm::IDrmFactory;
 using aidl::android::hardware::security::keymint::IRemotelyProvisionedComponent;
 using aidl::android::hardware::security::keymint::RpcHardwareInfo;
+using aidl::android::hardware::security::keymint::remote_prov::AVF_INSTANCE_NAME;
 using aidl::android::hardware::security::keymint::remote_prov::jsonEncodeCsrWithBuild;
-using aidl::android::hardware::security::keymint::remote_prov::RKPVM_INSTANCE_NAME;
 
 DEFINE_string(output_format, "build+csr", "How to format the output. Defaults to 'build+csr'.");
 DEFINE_bool(self_test, true,
             "Whether to validate the output for correctness. If enabled, this checks that the "
             "device on the factory line is producing valid output before attempting to upload the "
             "output to the device info service. Defaults to true.");
+DEFINE_string(self_test_mode, "factory",
+              "Specifies which tests to run during self_test validation. If set to 'strict', all "
+              "tests are run. If set to 'factory', tests that are not necessarily expected to pass "
+              "on DUT in the factory are filtered out. Defaults to 'factory'.");
 DEFINE_string(allow_degenerate, "",
               "Comma-delimited list of names of IRemotelyProvisionedComponent instances for which "
               "self_test validation allows degenerate DICE chains in the CSR. Example: "
@@ -83,6 +87,9 @@ struct CsrValidationConfig {
 
     // Present/Include all names of IRemotelyProvisionedComponent instances in the CSR
     bool require_all_hal_instances_irpc_names;
+
+    // Whether to run strict validation (all tests) or only factory-appropriate tests.
+    bool strict;
 };
 
 std::string getFullServiceName(const char* descriptor, const char* name) {
@@ -110,11 +117,11 @@ void writeOutput(const std::string instance_name, const cppbor::Array& csr) {
 }
 
 void getCsrForIRpc(const char* descriptor, const char* name, IRemotelyProvisionedComponent* irpc,
-                   bool allowDegenerate, bool requireUdsCerts) {
+                   bool strict, bool allowDegenerate, bool requireUdsCerts) {
     auto fullName = getFullServiceName(descriptor, name);
     // AVF RKP HAL is not always supported, so we need to check if it is supported before
     // generating the CSR.
-    if (fullName == RKPVM_INSTANCE_NAME) {
+    if (fullName == AVF_INSTANCE_NAME) {
         RpcHardwareInfo hwInfo;
         auto status = irpc->getHardwareInfo(&hwInfo);
         if (!status.isOk()) {
@@ -122,14 +129,15 @@ void getCsrForIRpc(const char* descriptor, const char* name, IRemotelyProvisione
         }
     }
 
-    auto [request, errMsg] = getCsr(name, irpc, FLAGS_self_test, allowDegenerate, requireUdsCerts);
+    auto [request, errMsg] =
+        getCsr(name, irpc, FLAGS_self_test, strict, allowDegenerate, requireUdsCerts);
     if (!request) {
         std::cerr << "Unable to build CSR for '" << fullName << "': " << errMsg << ", exiting."
                   << std::endl;
         exit(-1);
     }
 
-    if (fullName != RKPVM_INSTANCE_NAME) {
+    if (fullName != AVF_INSTANCE_NAME) {
         writeOutput(std::string(name), *request);
     }
 }
@@ -180,7 +188,7 @@ void getCsrForInstance(const char* name, void* context) {
     csrValidationConfig->require_uds_certs_irpc_names.erase(name);
 
     getCsrForIRpc(IRemotelyProvisionedComponent::descriptor, name, rkpService.get(),
-                  allowDegenerate, requireUdsCerts);
+                  csrValidationConfig->strict, allowDegenerate, requireUdsCerts);
 }
 
 }  // namespace
@@ -188,10 +196,18 @@ void getCsrForInstance(const char* name, void* context) {
 int main(int argc, char** argv) {
     gflags::ParseCommandLineFlags(&argc, &argv, /*remove_flags=*/true);
 
+    if (FLAGS_self_test_mode != "factory" && FLAGS_self_test_mode != "strict") {
+        std::cerr << "Invalid value for --self_test_mode: '" << FLAGS_self_test_mode << "'"
+                  << std::endl;
+        std::cerr << "Valid values are 'factory' and 'all'." << std::endl;
+        exit(-1);
+    }
+
     CsrValidationConfig csrValidationConfig = {
         .allow_degenerate_irpc_names = parseCommaDelimited(FLAGS_allow_degenerate),
         .require_uds_certs_irpc_names = parseCommaDelimited(FLAGS_require_uds_certs),
         .hal_instances_irpc_names = parseCommaDelimited(FLAGS_hal_instances),
+        .strict = FLAGS_self_test_mode == "strict",
     };
     csrValidationConfig.require_all_hal_instances_irpc_names =
         csrValidationConfig.hal_instances_irpc_names.empty();
@@ -209,8 +225,8 @@ int main(int argc, char** argv) {
         csrValidationConfig.allow_degenerate_irpc_names.erase(name);
         auto requireUdsCerts = csrValidationConfig.require_uds_certs_irpc_names.count(name) != 0;
         csrValidationConfig.require_uds_certs_irpc_names.erase(name);
-        getCsrForIRpc(IDrmFactory::descriptor, name.c_str(), irpc.get(), allowDegenerate,
-                      requireUdsCerts);
+        getCsrForIRpc(IDrmFactory::descriptor, name.c_str(), irpc.get(), csrValidationConfig.strict,
+                      allowDegenerate, requireUdsCerts);
     }
 
     // Print a warning for IRemotelyProvisionedComponent instance names that were passed
