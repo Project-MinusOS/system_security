@@ -1025,6 +1025,7 @@ pub fn generate_ec_256_attested_key(
     alias: Option<String>,
     att_challenge: &[u8],
     attest_key: &KeyDescriptor,
+    extra_tags: Option<AuthSetBuilder>,
 ) -> binder::Result<KeyMetadata> {
     let ec_gen_params = AuthSetBuilder::new()
         .no_auth_required()
@@ -1035,12 +1036,17 @@ pub fn generate_ec_256_attested_key(
         .ec_curve(EcCurve::P_256)
         .attestation_challenge(att_challenge.to_vec());
 
+    let mut params = ec_gen_params.to_vec();
+    if let Some(tags) = extra_tags {
+        params.extend_from_slice(&tags);
+    }
+
     let ec_key_metadata = sl
         .binder
         .generateKey(
             &KeyDescriptor { domain: Domain::APP, nspace: -1, alias, blob: None },
             Some(attest_key),
-            &ec_gen_params,
+            &params,
             0,
             b"entropy",
         )

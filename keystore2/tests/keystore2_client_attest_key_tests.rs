@@ -16,10 +16,11 @@ use crate::keystore2_client_test_utils::{
     app_attest_key_feature_exists, device_id_attestation_check_acceptable_error,
     device_id_attestation_feature_exists, get_attest_id_value,
     is_second_imei_id_attestation_required, skip_device_id_attest_tests,
+    skip_device_id_second_imei_tests,
 };
 use crate::{
-    skip_device_id_attestation_tests, skip_test_if_no_app_attest_key_feature,
-    skip_test_if_no_device_id_attestation_feature,
+    skip_device_id_attestation_second_imei_tests, skip_device_id_attestation_tests,
+    skip_test_if_no_app_attest_key_feature, skip_test_if_no_device_id_attestation_feature,
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, Digest::Digest, EcCurve::EcCurve,
@@ -178,6 +179,7 @@ fn keystore2_attest_ec_key_success() {
             Some(ec_key_alias),
             att_challenge,
             &attestation_key_metadata.key,
+            None,
         )
         .unwrap();
 
@@ -475,6 +477,184 @@ fn keystore2_attest_rsa_key_with_symmetric_key_fails_sys_error() {
     assert_eq!(Error::Rc(ResponseCode::INVALID_ARGUMENT), result.unwrap_err());
 }
 
+/// Test that IMEI attestation succeeds even when IMEI and second IMEI are swapped.
+#[test]
+fn keystore2_attest_key_swapped_both_imei_success() {
+    skip_test_if_no_device_id_attestation_feature!();
+    skip_device_id_attestation_tests!();
+    skip_test_if_no_app_attest_key_feature!();
+    skip_device_id_attestation_second_imei_tests!();
+    let sl = SecLevel::tee();
+
+    // Skip the test if there aren't two IMEIs.
+    let (imei1, imei2) = match (
+        get_attest_id_value(Tag::ATTESTATION_ID_IMEI, ""),
+        get_attest_id_value(Tag::ATTESTATION_ID_SECOND_IMEI, ""),
+    ) {
+        (Some(i1), Some(i2)) if !i1.is_empty() && !i2.is_empty() => (i1, i2),
+        _ => {
+            return;
+        }
+    };
+
+    let att_challenge: &[u8] = b"foo";
+    let Some(attestation_key_metadata) = key_generations::map_ks_error(
+        key_generations::generate_attestation_key(&sl, Algorithm::EC, att_challenge),
+    )
+    .unwrap() else {
+        return;
+    };
+
+    let gen_params_normal = authorizations::AuthSetBuilder::new()
+        .attestation_device_imei(imei1.clone())
+        .attestation_device_second_imei(imei2.clone());
+
+    let result1 = key_generations::map_ks_error(key_generations::generate_ec_256_attested_key(
+        &sl,
+        Some("ks_attest_swapped_imei_test_key1".to_string()),
+        att_challenge,
+        &attestation_key_metadata.key,
+        Some(gen_params_normal),
+    ));
+    assert!(result1.is_ok(), "generateKey with regular IMEI ordering failed: {:?}", result1.err());
+    let key_metadata1 = result1.unwrap();
+    sl.keystore2.deleteKey(&key_metadata1.key).unwrap();
+
+    let gen_params_swap = authorizations::AuthSetBuilder::new()
+        .attestation_device_imei(imei2.clone())
+        .attestation_device_second_imei(imei1.clone());
+    let result2 = key_generations::map_ks_error(key_generations::generate_ec_256_attested_key(
+        &sl,
+        Some("ks_attest_swapped_imei_test_key2".to_string()),
+        att_challenge,
+        &attestation_key_metadata.key,
+        Some(gen_params_swap),
+    ));
+    assert!(result2.is_ok(), "generateKey with swapped IMEIs failed: {:?}", result2.err());
+    let key_metadata2 = result2.unwrap();
+
+    sl.keystore2.deleteKey(&key_metadata2.key).unwrap();
+    sl.keystore2.deleteKey(&attestation_key_metadata.key).unwrap();
+}
+
+/// Test that IMEI attestation succeeds when each one of the two IMEIs is provided by
+/// itself in the first slot.
+#[test]
+fn keystore2_attest_key_swapped_singular_first_imei_success() {
+    skip_test_if_no_device_id_attestation_feature!();
+    skip_device_id_attestation_tests!();
+    skip_test_if_no_app_attest_key_feature!();
+    skip_device_id_attestation_second_imei_tests!();
+    let sl = SecLevel::tee();
+
+    // Skip the test if there aren't two IMEIs.
+    let (imei1, imei2) = match (
+        get_attest_id_value(Tag::ATTESTATION_ID_IMEI, ""),
+        get_attest_id_value(Tag::ATTESTATION_ID_SECOND_IMEI, ""),
+    ) {
+        (Some(i1), Some(i2)) if !i1.is_empty() && !i2.is_empty() => (i1, i2),
+        _ => {
+            return;
+        }
+    };
+    let att_challenge: &[u8] = b"foo";
+    let Some(attestation_key_metadata) = key_generations::map_ks_error(
+        key_generations::generate_attestation_key(&sl, Algorithm::EC, att_challenge),
+    )
+    .unwrap() else {
+        return;
+    };
+
+    let gen_params_normal =
+        authorizations::AuthSetBuilder::new().attestation_device_imei(imei1.clone());
+
+    let result1 = key_generations::map_ks_error(key_generations::generate_ec_256_attested_key(
+        &sl,
+        Some("ks_attest_swapped_imei_test_key1".to_string()),
+        att_challenge,
+        &attestation_key_metadata.key,
+        Some(gen_params_normal),
+    ));
+    assert!(result1.is_ok(), "generateKey with regular IMEI ordering failed: {:?}", result1.err());
+    let key_metadata1 = result1.unwrap();
+    sl.keystore2.deleteKey(&key_metadata1.key).unwrap();
+
+    let gen_params_swap =
+        authorizations::AuthSetBuilder::new().attestation_device_imei(imei2.clone());
+
+    let result2 = key_generations::map_ks_error(key_generations::generate_ec_256_attested_key(
+        &sl,
+        Some("ks_attest_swapped_imei_test_key2".to_string()),
+        att_challenge,
+        &attestation_key_metadata.key,
+        Some(gen_params_swap),
+    ));
+    assert!(result2.is_ok(), "generateKey with swapped IMEIs failed: {:?}", result2.err());
+    let key_metadata2 = result2.unwrap();
+
+    sl.keystore2.deleteKey(&key_metadata2.key).unwrap();
+    sl.keystore2.deleteKey(&attestation_key_metadata.key).unwrap();
+}
+
+/// Test that IMEI attestation succeeds when each one of the two IMEIs is provided
+/// separately in the second tag slot.
+#[test]
+fn keystore2_attest_key_swapped_singular_second_imei_success() {
+    skip_test_if_no_device_id_attestation_feature!();
+    skip_device_id_attestation_tests!();
+    skip_test_if_no_app_attest_key_feature!();
+    skip_device_id_attestation_second_imei_tests!();
+    let sl = SecLevel::tee();
+
+    // Skip the test is there aren't two IMEIs.
+    let (imei1, imei2) = match (
+        get_attest_id_value(Tag::ATTESTATION_ID_IMEI, ""),
+        get_attest_id_value(Tag::ATTESTATION_ID_SECOND_IMEI, ""),
+    ) {
+        (Some(i1), Some(i2)) if !i1.is_empty() && !i2.is_empty() => (i1, i2),
+        _ => {
+            return;
+        }
+    };
+    let att_challenge: &[u8] = b"foo";
+    let Some(attestation_key_metadata) = key_generations::map_ks_error(
+        key_generations::generate_attestation_key(&sl, Algorithm::EC, att_challenge),
+    )
+    .unwrap() else {
+        return;
+    };
+
+    let gen_params_normal =
+        authorizations::AuthSetBuilder::new().attestation_device_second_imei(imei1.clone());
+
+    let result1 = key_generations::map_ks_error(key_generations::generate_ec_256_attested_key(
+        &sl,
+        Some("ks_attest_swapped_imei_test_key1".to_string()),
+        att_challenge,
+        &attestation_key_metadata.key,
+        Some(gen_params_normal),
+    ));
+    assert!(result1.is_ok(), "generateKey with regular IMEI ordering failed: {:?}", result1.err());
+    let key_metadata1 = result1.unwrap();
+    sl.keystore2.deleteKey(&key_metadata1.key).unwrap();
+
+    let gen_params_swap =
+        authorizations::AuthSetBuilder::new().attestation_device_second_imei(imei2.clone());
+
+    let result2 = key_generations::map_ks_error(key_generations::generate_ec_256_attested_key(
+        &sl,
+        Some("ks_attest_swapped_imei_test_key2".to_string()),
+        att_challenge,
+        &attestation_key_metadata.key,
+        Some(gen_params_swap),
+    ));
+    assert!(result2.is_ok(), "generateKey with swapped IMEIs failed: {:?}", result2.err());
+    let key_metadata2 = result2.unwrap();
+
+    sl.keystore2.deleteKey(&key_metadata2.key).unwrap();
+    sl.keystore2.deleteKey(&attestation_key_metadata.key).unwrap();
+}
+
 fn get_attestation_ids(keystore2: &binder::Strong<dyn IKeystoreService>) -> Vec<(Tag, Vec<u8>)> {
     let attest_ids = vec![
         (Tag::ATTESTATION_ID_BRAND, "brand"),
@@ -632,7 +812,6 @@ fn keystore2_attest_key_without_attestation_id_support_fails_with_cannot_attest_
     }
     skip_device_id_attestation_tests!();
     skip_test_if_no_app_attest_key_feature!();
-
     let sl = SecLevel::tee();
 
     let att_challenge: &[u8] = b"foo";
