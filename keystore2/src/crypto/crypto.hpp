@@ -50,10 +50,7 @@ extern "C" {
                   const uint8_t *prk, size_t prk_len,
                   const uint8_t *info, size_t info_len);
 
-  // We define this as field_elem_size.
-  static const size_t EC_MAX_BYTES = 32;
-
-  int ECDHComputeKey(void *out, const EC_POINT *pub_key, const EC_KEY *priv_key);
+  int ECDHComputeKey(void *out, size_t out_len, const EC_POINT *pub_key, const EC_KEY *priv_key);
 
   EC_KEY* ECKEYGenerateKey();
 
