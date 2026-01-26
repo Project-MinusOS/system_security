@@ -85,29 +85,27 @@ const APP_ATTEST_KEY_FEATURE: &str = "android.hardware.keystore.app_attest_key";
 const DEVICE_ID_ATTESTATION_FEATURE: &str = "android.software.device_id_attestation";
 const STRONGBOX_KEYSTORE_FEATURE: &str = "android.hardware.strongbox_keystore";
 
-/// Determines whether app_attest_key_feature is supported or not.
-pub fn app_attest_key_feature_exists() -> bool {
+fn has_system_feature(feature: &str, version: i32) -> bool {
     let pm = wait_for_interface::<dyn IPackageManagerNative>(PACKAGE_MANAGER_NATIVE_SERVICE)
         .expect("Failed to get package manager native service.");
 
-    pm.hasSystemFeature(APP_ATTEST_KEY_FEATURE, 0).expect("hasSystemFeature failed.")
+    pm.hasSystemFeature(feature, version).expect("hasSystemFeature failed.")
+}
+
+/// Determines whether app_attest_key_feature is supported or not.
+pub fn app_attest_key_feature_exists() -> bool {
+    has_system_feature(APP_ATTEST_KEY_FEATURE, 0)
 }
 
 /// Determines whether device_id_attestation is supported or not.
 pub fn device_id_attestation_feature_exists() -> bool {
-    let pm = wait_for_interface::<dyn IPackageManagerNative>(PACKAGE_MANAGER_NATIVE_SERVICE)
-        .expect("Failed to get package manager native service.");
-
-    pm.hasSystemFeature(DEVICE_ID_ATTESTATION_FEATURE, 0).expect("hasSystemFeature failed.")
+    has_system_feature(DEVICE_ID_ATTESTATION_FEATURE, 0)
 }
 
 /// Determines whether device-unique attestation might be supported by StrongBox.
 pub fn skip_device_unique_attestation_tests() -> bool {
-    let pm = wait_for_interface::<dyn IPackageManagerNative>(PACKAGE_MANAGER_NATIVE_SERVICE)
-        .expect("Failed to get package manager native service.");
-
     // Device unique attestation was first included in Keymaster 4.1.
-    !pm.hasSystemFeature(STRONGBOX_KEYSTORE_FEATURE, 41).expect("hasSystemFeature failed.")
+    !has_system_feature(STRONGBOX_KEYSTORE_FEATURE, 41)
 }
 
 /// Determines whether to skip device id attestation tests on GSI build with API level < 34.

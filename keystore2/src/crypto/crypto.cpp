@@ -219,8 +219,8 @@ bool HKDFExpand(uint8_t* out_key, size_t out_len, const uint8_t* prk, size_t prk
     return result == 1;
 }
 
-int ECDHComputeKey(void* out, const EC_POINT* pub_key, const EC_KEY* priv_key) {
-    return ECDH_compute_key(out, EC_MAX_BYTES, pub_key, priv_key, nullptr);
+int ECDHComputeKey(void* out, size_t out_len, const EC_POINT* pub_key, const EC_KEY* priv_key) {
+    return ECDH_compute_key(out, out_len, pub_key, priv_key, nullptr);
 }
 
 EC_KEY* ECKEYGenerateKey() {

@@ -22,7 +22,7 @@ use keystore2_crypto_bindgen::{
     extractSubjectFromCertificate, hmacSha256, randomBytes, AES_gcm_decrypt, AES_gcm_encrypt,
     ECDHComputeKey, ECKEYGenerateKey, ECKEYMarshalPrivateKey, ECKEYParsePrivateKey,
     ECPOINTOct2Point, ECPOINTPoint2Oct, EC_KEY_free, EC_KEY_get0_public_key, EC_POINT_free,
-    HKDFExpand, HKDFExtract, EC_KEY, EC_MAX_BYTES, EC_POINT, EVP_MAX_MD_SIZE, PBKDF2,
+    HKDFExpand, HKDFExtract, EC_KEY, EC_POINT, EVP_MAX_MD_SIZE, PBKDF2,
 };
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -41,6 +41,12 @@ pub const AES_128_KEY_LENGTH: usize = 16;
 pub const SALT_LENGTH: usize = 16;
 /// Length of an HMAC-SHA256 tag in bytes.
 pub const HMAC_SHA256_LEN: usize = 32;
+/// Length of ECDH P-521 output in bytes.
+pub const ECDH_P521_OUTPUT_LEN: usize = 66;
+
+/// Older versions of keystore incorrectly truncated ECDH P-521 outputs to the following length.
+/// Retain the ability to decrypt keys that were stored in the database using the old method.
+pub const LEGACY_TRUNCATED_ECDH_OUTPUT_LEN: usize = 32;
 
 /// Older versions of keystore produced IVs with four extra
 /// ignored zero bytes at the end; recognise and trim those.
@@ -333,14 +339,28 @@ impl Drop for OwnedECPoint {
     }
 }
 
+/// Selects how the ECDH P-521 output is used.
+#[derive(Clone, Copy)]
+pub enum EcdhComputeKeyVersion {
+    /// Use only the first 32 bytes of the ECDH P-521 output.  This does not follow cryptographic
+    /// best practices.  The code is retained only to allow decrypting existing keys.
+    LegacyTruncated,
+    /// Use the full 66 bytes of the ECDH P-521 output.
+    Current,
+}
+
 /// Calls the boringssl ECDH_compute_key function.
-pub fn ecdh_compute_key(pub_key: &EC_POINT, priv_key: &ECKey) -> Result<ZVec, Error> {
-    let mut buf = ZVec::new(EC_MAX_BYTES)?;
-    let result =
-    // Safety: Our ECDHComputeKey wrapper passes EC_MAX_BYES to ECDH_compute_key, which
-    // writes at most that many bytes to the output.
-    // The two keys are valid objects.
-        unsafe { ECDHComputeKey(buf.as_mut_ptr() as *mut std::ffi::c_void, pub_key, priv_key.0) };
+pub fn ecdh_compute_key(
+    pub_key: &EC_POINT,
+    priv_key: &ECKey,
+    version: EcdhComputeKeyVersion,
+) -> Result<ZVec, Error> {
+    let mut buf = ZVec::new(ECDH_P521_OUTPUT_LEN)?;
+    // Safety: ECDHComputeKey() writes at most out_len=buf.len() bytes to buf,
+    // and the two keys are valid objects.
+    let result = unsafe {
+        ECDHComputeKey(buf.as_mut_ptr() as *mut std::ffi::c_void, buf.len(), pub_key, priv_key.0)
+    };
     if result == -1 {
         return Err(Error::ECDHComputeKeyFailed);
     }
@@ -352,6 +372,12 @@ pub fn ecdh_compute_key(pub_key: &EC_POINT, priv_key: &ECKey) -> Result<ZVec, Er
     // ECDH_compute_key may write fewer than the maximum number of bytes, so we
     // truncate the buffer.
     buf.reduce_len(out_len);
+
+    // If attempting the legacy key decryption method, further truncate the output.
+    match version {
+        EcdhComputeKeyVersion::LegacyTruncated => buf.reduce_len(LEGACY_TRUNCATED_ECDH_OUTPUT_LEN),
+        EcdhComputeKeyVersion::Current => (),
+    }
     Ok(buf)
 }
 
@@ -584,10 +610,12 @@ mod tests {
         let pub0 = ec_point_oct_to_point(&pub0s)?;
         let pub1 = ec_point_oct_to_point(&pub1s)?;
 
-        let left_key = ecdh_compute_key(pub0.get_point(), &priv1)?;
-        let right_key = ecdh_compute_key(pub1.get_point(), &priv0)?;
+        for version in [EcdhComputeKeyVersion::Current, EcdhComputeKeyVersion::LegacyTruncated] {
+            let left_key = ecdh_compute_key(pub0.get_point(), &priv1, version)?;
+            let right_key = ecdh_compute_key(pub1.get_point(), &priv0, version)?;
+            assert_eq!(left_key, right_key);
+        }
 
-        assert_eq!(left_key, right_key);
         Ok(())
     }
 
