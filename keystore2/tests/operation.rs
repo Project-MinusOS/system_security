@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
+use crate::test_utils::{
     create_signing_operation, delete_app_key, delete_key, execute_op_run_as_child,
     perform_sample_sign_operation, BarrierReached, ForcedOp, TestOutcome,
 };

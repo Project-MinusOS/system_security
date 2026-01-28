@@ -17,7 +17,7 @@
 //! Only minimal testing is required because `keystore2` passes through all ML-DSA
 //! functionality to KeyMint (i.e. there is no software emulation).
 
-use crate::keystore2_client_test_utils::{delete_app_key, perform_sample_sign_operation};
+use crate::test_utils::{delete_app_key, perform_sample_sign_operation};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, Digest::Digest, KeyParameter::KeyParameter,
     KeyParameterValue::KeyParameterValue, KeyPurpose::KeyPurpose, MlDsaVariant::MlDsaVariant,

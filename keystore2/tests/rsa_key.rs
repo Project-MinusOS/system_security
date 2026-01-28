@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{delete_app_key, perform_sample_sign_operation, ForcedOp};
 use crate::skip_on_vendor_api_level_android_t_and_earlier;
+use crate::test_utils::{delete_app_key, perform_sample_sign_operation, ForcedOp};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Digest::Digest, ErrorCode::ErrorCode, KeyPurpose::KeyPurpose, PaddingMode::PaddingMode,
 };

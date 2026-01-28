@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::perform_sample_sign_operation;
+use crate::test_utils::perform_sample_sign_operation;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Digest::Digest, EcCurve::EcCurve, KeyPurpose::KeyPurpose,
 };
