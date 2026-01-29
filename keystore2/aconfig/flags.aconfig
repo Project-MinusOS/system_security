@@ -67,3 +67,14 @@ flag {
   bug: "393058909"
   is_fixed_read_only: true
 }
+
+flag {
+  name: "faster_rebind_cleanup"
+  namespace: "hardware_backed_security"
+  description: "Perform faster cleanup of orphaned blobs from rebinds"
+  bug: "462372417"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+  is_fixed_read_only: true
+}

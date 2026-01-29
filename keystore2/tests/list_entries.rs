@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{delete_all_entries, delete_app_key, verify_aliases};
+use crate::test_utils::{delete_all_entries, delete_app_key, verify_aliases};
 use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, IKeystoreService::IKeystoreService, KeyDescriptor::KeyDescriptor,
     KeyPermission::KeyPermission, ResponseCode::ResponseCode,

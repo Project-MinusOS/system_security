@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
+use crate::test_utils::{
     delete_app_key, encrypt_secure_key, encrypt_transport_key, perform_sample_asym_sign_verify_op,
     perform_sample_hmac_sign_verify_op, perform_sample_sym_key_decrypt_op,
     perform_sample_sym_key_encrypt_op, SAMPLE_PLAIN_TEXT,

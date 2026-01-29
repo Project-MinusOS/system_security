@@ -16,6 +16,7 @@
 
 use super::*;
 use super::utils as db_utils;
+use crate::utils::watchdog as wd;
 use crate::key_parameter::{
     Algorithm, BlockMode, Digest, EcCurve, HardwareAuthenticatorType, KeyOrigin, KeyParameter,
     KeyParameterValue, KeyPurpose, PaddingMode, SecurityLevel,
@@ -31,6 +32,7 @@ use android_hardware_security_secureclock::aidl::android::hardware::security::se
     Timestamp::Timestamp,
 };
 use keystore2_test_utils::TempDir;
+use log::{trace, debug};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -38,9 +40,12 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
-use crate::utils::{init_test_logging, AesGcm};
+use crate::utils::{init_test_logging, init_test_logging_at, AesGcm};
 #[cfg(disabled)]
 use std::time::Instant;
+
+/// Log level to use for long-running tests.
+const MAX_LOG_LEVEL: log::LevelFilter = log::LevelFilter::Trace;
 
 pub fn new_test_db() -> Result<KeystoreDB> {
     new_test_db_at("file::memory:")
@@ -2601,6 +2606,12 @@ fn blob_count_in_state(db: &mut KeystoreDB, sc_type: SubComponentType, state: Bl
     .unwrap()
 }
 
+fn all_blob_count_in_state(db: &mut KeystoreDB, state: BlobState) -> usize {
+    blob_count_in_state(db, SubComponentType::KEY_BLOB, state)
+        + blob_count_in_state(db, SubComponentType::CERT, state)
+        + blob_count_in_state(db, SubComponentType::CERT_CHAIN, state)
+}
+
 #[test]
 fn test_blobentry_gc() -> Result<()> {
     use BlobState::{Current, Orphaned, Superseded};
@@ -3189,7 +3200,7 @@ fn test_many_rebind_same_alias() -> Result<()> {
         assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Live), 1);
         assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Unreferenced), 0);
 
-        // ... reduce the number of blobs in the table by the number of IDs passed in
+        // ... reduce the number of key blobs in the table by the number of IDs passed in
         orphan_blob_count -= superseded_ids.len();
         assert_eq!(
             blob_count_in_state(&mut db, SubComponentType::KEY_BLOB, BlobState::Orphaned),
@@ -3202,4 +3213,321 @@ fn test_many_rebind_same_alias() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn trace_blob_counts(db: &mut KeystoreDB, prefix: &str, msg: &str) {
+    if MAX_LOG_LEVEL < log::LevelFilter::Trace {
+        return;
+    }
+    let current_keyblobs = blob_count_in_state(db, SubComponentType::KEY_BLOB, BlobState::Current);
+    let current_cert_blobs = blob_count_in_state(db, SubComponentType::CERT, BlobState::Current);
+    let current_chain_blobs =
+        blob_count_in_state(db, SubComponentType::CERT_CHAIN, BlobState::Current);
+    let current_nonkey_blobs = current_cert_blobs + current_chain_blobs;
+    let current_blobs = current_keyblobs + current_nonkey_blobs;
+
+    let superseded_keyblobs =
+        blob_count_in_state(db, SubComponentType::KEY_BLOB, BlobState::Superseded);
+    let superseded_cert_blobs =
+        blob_count_in_state(db, SubComponentType::CERT, BlobState::Superseded);
+    let superseded_chain_blobs =
+        blob_count_in_state(db, SubComponentType::CERT_CHAIN, BlobState::Superseded);
+    let superseded_nonkey_blobs = superseded_cert_blobs + superseded_chain_blobs;
+    let superseded_blobs = superseded_keyblobs + superseded_nonkey_blobs;
+
+    let orphaned_keyblobs =
+        blob_count_in_state(db, SubComponentType::KEY_BLOB, BlobState::Orphaned);
+    let orphaned_cert_blobs = blob_count_in_state(db, SubComponentType::CERT, BlobState::Orphaned);
+    let orphaned_chain_blobs =
+        blob_count_in_state(db, SubComponentType::CERT_CHAIN, BlobState::Orphaned);
+    let orphaned_nonkey_blobs = orphaned_cert_blobs + orphaned_chain_blobs;
+    let orphaned_blobs = orphaned_keyblobs + orphaned_nonkey_blobs;
+
+    trace!("{prefix}{msg}");
+    trace!("{prefix}[Current:    {current_blobs:>5} blobs = {current_keyblobs:>5} keyblobs + {current_nonkey_blobs:>5} non-key blobs (= {current_cert_blobs:>5} + {current_chain_blobs:>5})]");
+    trace!("{prefix}[Superseded: {superseded_blobs:>5} blobs = {superseded_keyblobs:>5} keyblobs + {superseded_nonkey_blobs:>5} non-key blobs (= {superseded_cert_blobs:>5} + {superseded_chain_blobs:>5})]");
+    trace!("{prefix}[Orphaned:   {orphaned_blobs:>5} blobs = {orphaned_keyblobs:>5} keyblobs + {orphaned_nonkey_blobs:>5} non-key blobs (= {orphaned_cert_blobs:>5} + {orphaned_chain_blobs:>5})]");
+}
+
+macro_rules! time {
+    { $f:expr } => {
+        if MAX_LOG_LEVEL >= log::LevelFilter::Debug {
+            let start = std::time::Instant::now();
+            let result = $f;
+            let elapsed = start.elapsed();
+            log::debug!("performing `{}` took {elapsed:?}", stringify!($f));
+            result
+        } else {
+            $f
+        }
+    }
+}
+
+#[test]
+fn test_many_rebind_recovery_fix() -> Result<()> {
+    init_test_logging_at(MAX_LOG_LEVEL);
+
+    // Put the test database on disk for a more realistic result.
+    let db_root = tempfile::Builder::new().prefix("ks2db-test-").tempdir().unwrap();
+    let mut db_path = db_root.path().to_owned();
+    db_path.push("ks2-test.sqlite");
+    let mut db = new_test_db_at(&db_path.to_string_lossy())?;
+
+    let descriptor = KeyDescriptor {
+        domain: super::Domain::APP,
+        nspace: 0, // uid
+        alias: Some("reused-alias".to_string()),
+        blob: None,
+    };
+    let params = make_test_params(None);
+    let blob_metadata = BlobMetaData::new();
+    let blob_info = BlobInfo::new(TEST_KEY_BLOB, &blob_metadata);
+    let cert_info = CertificateInfo::new(Some(vec![1, 2, 3]), Some(vec![2, 3, 4]));
+    let key_metadata = KeyMetaData::new();
+
+    let key_count: usize = 1500;
+    for idx in 0..key_count {
+        if idx.is_multiple_of(1000) {
+            debug!("Creating key {idx} of {key_count}");
+        }
+        let _key_id = db.store_new_key(
+            &descriptor,
+            KeyType::Client,
+            &params,
+            &blob_info,
+            &cert_info,
+            &key_metadata,
+            &KEYSTORE_UUID,
+        )?;
+    }
+
+    // Nothing removed yet, but only one live key.
+    trace_blob_counts(&mut db, "", "Test start");
+    assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Live), 1);
+    assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Unreferenced), key_count - 1);
+    assert_eq!(all_blob_count_in_state(&mut db, BlobState::Current), 3 * key_count);
+
+    // Perform the previous, bugged, version of GC.
+    let superseded_blobs = b416190842::handle_next_superseded_blobs(&mut db, &[], 20)?;
+    trace_blob_counts(&mut db, "", "after bugged GC");
+
+    // All of the unreferenced `keyentry` rows have been removed.
+    assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Live), 1);
+    assert_eq!(db_key_count_in_state(&mut db, KeyLifeCycle::Unreferenced), 0);
+
+    // However, with the bug the current `blobentry` rows still include the superseded blobs.
+    assert_eq!(superseded_blobs.len(), 0);
+    let mut current_blob_count = 3 * key_count;
+    assert_eq!(all_blob_count_in_state(&mut db, BlobState::Current), current_blob_count);
+
+    // Loop round simulating repeated (reboot + repeated GC) using the current code, until only the
+    // 3 blobs associated with the single key remain.
+    while current_blob_count > 3 {
+        trace_blob_counts(&mut db, "  ", "on simulated device boot");
+        // Invoke the start-of-day cleanup code included in the fix for b/416190842, which should
+        // mark some blobs as orphaned.
+        let cleanup_count = 100;
+
+        time!(db.cleanup_leftovers(cleanup_count))?;
+        trace_blob_counts(&mut db, "  ",
+            &format!("  result of start-of-day cleanup to mark up to {cleanup_count} blobs of {current_blob_count} current blobs as orphaned")
+        );
+        let new_blob_count = std::cmp::max(3, current_blob_count - cleanup_count);
+        let orphaned_this_time = current_blob_count - new_blob_count;
+        current_blob_count = new_blob_count;
+
+        assert_eq!(all_blob_count_in_state(&mut db, BlobState::Orphaned), orphaned_this_time);
+        assert_eq!(all_blob_count_in_state(&mut db, BlobState::Current), current_blob_count);
+        // Remember which of the orphans are non-key blobs.
+        let mut nonkey_blob_orphan_count =
+            blob_count_in_state(&mut db, SubComponentType::CERT, BlobState::Orphaned)
+                + blob_count_in_state(&mut db, SubComponentType::CERT_CHAIN, BlobState::Orphaned);
+
+        while nonkey_blob_orphan_count > 0 {
+            trace_blob_counts(&mut db, "    ", "start a set of GCs");
+            let mut superseded_blob_ids = vec![];
+            loop {
+                // The (current) GC code should return some of the orphaned keyblobs for removal.
+                trace_blob_counts(
+                    &mut db,
+                    "      ",
+                    &format!(
+                        "perform single GC, feeding in {} keyblob ids\n",
+                        superseded_blob_ids.len()
+                    ),
+                );
+                let superseded_blobs =
+                    time!(db.handle_next_superseded_blobs(&superseded_blob_ids, 20))?;
+                trace_blob_counts(
+                    &mut db,
+                    "      ",
+                    &format!("GC emits {} superseded keyblobs", superseded_blobs.len()),
+                );
+
+                if superseded_blobs.is_empty() {
+                    // If no keyblobs are found for removal, the GC code will also have removed
+                    // all of the orphaned non-keyblobs.
+                    let expected_nonkey_removals = nonkey_blob_orphan_count;
+                    let expected_nonkey_blob_orphan_count =
+                        nonkey_blob_orphan_count - expected_nonkey_removals;
+                    nonkey_blob_orphan_count =
+                        blob_count_in_state(&mut db, SubComponentType::CERT, BlobState::Orphaned)
+                            + blob_count_in_state(
+                                &mut db,
+                                SubComponentType::CERT_CHAIN,
+                                BlobState::Orphaned,
+                            );
+                    debug!("      no keyblobs to remove so {expected_nonkey_removals} superseded non-keyblobs should have been removed, leaving {nonkey_blob_orphan_count}");
+                    assert_eq!(nonkey_blob_orphan_count, expected_nonkey_blob_orphan_count);
+                    break;
+                }
+
+                // If keyblobs are found for removal, another GC will happen.
+                superseded_blob_ids = superseded_blobs.into_iter().map(|sb| sb.blob_id).collect();
+            }
+        }
+    }
+    trace_blob_counts(&mut db, "", "final state");
+    assert_eq!(all_blob_count_in_state(&mut db, BlobState::Current), 3);
+    assert_eq!(all_blob_count_in_state(&mut db, BlobState::Orphaned), 0);
+
+    Ok(())
+}
+
+/// Module holding copies of database GC functions that have b/416190842 incorrect behaviour still
+/// present.
+mod b416190842 {
+    use super::*;
+
+    /// Copy of GC function but with b/416190842 incorrect behaviour still present.
+    pub fn handle_next_superseded_blobs(
+        db: &mut KeystoreDB,
+        blob_ids_to_delete: &[i64],
+        max_blobs: usize,
+    ) -> Result<Vec<SupersededBlob>> {
+        let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob");
+        db.with_transaction(Immediate("TX_handle_next_superseded_blob"), |tx| {
+            // Delete the given blobs.
+            for blob_id in blob_ids_to_delete {
+                tx.execute(
+                    "DELETE FROM persistent.blobmetadata WHERE blobentryid = ?;",
+                    params![blob_id],
+                )
+                .context(ks_err!("Trying to delete blob metadata: {:?}", blob_id))?;
+                tx.execute("DELETE FROM persistent.blobentry WHERE id = ?;", params![blob_id])
+                    .context(ks_err!("Trying to delete blob: {:?}", blob_id))?;
+            }
+
+            cleanup_unreferenced(tx).context("Trying to cleanup unreferenced.")?;
+
+            // Find up to `max_blobs` more out-of-date key blobs, load their metadata and return it.
+            let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob find_next v2");
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, blob FROM persistent.blobentry
+                    WHERE subcomponent_type = ? AND state != ?
+                    LIMIT ?;",
+                )
+                .context("Trying to prepare query for superseded blobs.")?;
+
+            let rows = stmt
+                .query_map(
+                    params![SubComponentType::KEY_BLOB, BlobState::Current, max_blobs as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .context("Trying to query superseded blob.")?;
+
+            let result: Vec<(i64, Vec<u8>)> = rows
+                .collect::<Result<Vec<(i64, Vec<u8>)>, rusqlite::Error>>()
+                .context("Trying to extract superseded blobs.")?;
+
+            let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob load_metadata");
+            let result = result
+                .into_iter()
+                .map(|(blob_id, blob)| {
+                    Ok(SupersededBlob {
+                        blob_id,
+                        blob,
+                        metadata: BlobMetaData::load_from_db(blob_id, tx)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+                .context("Trying to load blob metadata.")?;
+            if !result.is_empty() {
+                return Ok(result).no_gc();
+            }
+
+            // We did not find any out-of-date key blobs, so let's remove other types of superseded
+            // blob in one transaction.
+            let _wp = wd::watch("KeystoreDB::handle_next_superseded_blob delete v2");
+            let deleted = tx
+                .execute(
+                    "DELETE FROM persistent.blobentry
+                    WHERE subcomponent_type != ? AND state != ?;",
+                    params![SubComponentType::KEY_BLOB, BlobState::Current],
+                )
+                .context("Trying to purge out-of-date blobs (other than keyblobs)")?;
+            info!("GC deleted {deleted} non-current non-key blobs");
+            Ok(vec![]).no_gc()
+        })
+        .context(ks_err!())
+    }
+
+    fn cleanup_unreferenced(tx: &Transaction) -> Result<()> {
+        let _wp = wd::watch("KeystoreDB::cleanup_unreferenced");
+        {
+            tx.execute(
+                "DELETE FROM persistent.keymetadata
+            WHERE keyentryid IN (
+                SELECT id FROM persistent.keyentry
+                WHERE state = ?
+            );",
+                params![KeyLifeCycle::Unreferenced],
+            )
+            .context("Trying to delete keymetadata.")?;
+            tx.execute(
+                "DELETE FROM persistent.keyparameter
+            WHERE keyentryid IN (
+                SELECT id FROM persistent.keyentry
+                WHERE state = ?
+            );",
+                params![KeyLifeCycle::Unreferenced],
+            )
+            .context("Trying to delete keyparameters.")?;
+            tx.execute(
+                "DELETE FROM persistent.grant
+            WHERE keyentryid IN (
+                SELECT id FROM persistent.keyentry
+                WHERE state = ?
+            );",
+                params![KeyLifeCycle::Unreferenced],
+            )
+            .context("Trying to delete grants.")?;
+
+            /* Local revert of ag/33370965 to allow reproduction of b/416190842
+
+            // Mark as orphaned any blobentry rows that are associated with keyentry rows that
+            // are about to be deleted.  The orphaned rows will be removed in a later GC
+            // operation (which also involves notifying the owning KeyMint of keyblob deletion).
+            tx.execute(
+                "UPDATE persistent.blobentry SET state=?
+                    WHERE keyentryid IN (
+                      SELECT id FROM persistent.keyentry
+                      WHERE state = ?
+                    );",
+                params![BlobState::Orphaned, KeyLifeCycle::Unreferenced],
+            )
+            .context("Trying to mark to-be-orphaned blobs")?;
+            */
+
+            tx.execute(
+                "DELETE FROM persistent.keyentry
+            WHERE state = ?;",
+                params![KeyLifeCycle::Unreferenced],
+            )
+            .context("Trying to delete keyentry.")?;
+            Result::<()>::Ok(())
+        }
+        .context(ks_err!())
+    }
 }

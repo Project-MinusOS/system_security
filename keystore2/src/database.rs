@@ -1408,7 +1408,6 @@ impl KeystoreDB {
                 params![SubComponentType::KEY_BLOB, BlobState::Current],
             )
             .context("Trying to purge out-of-date blobs (other than keyblobs)")?;
-
             Ok(vec![]).no_gc()
         })
         .context(ks_err!())
@@ -1427,24 +1426,28 @@ impl KeystoreDB {
     ///
     /// The function also marks any `blobentry` rows that don't have an owning `keyentry` row as
     /// orphaned.
-    pub fn cleanup_leftovers(&mut self) -> Result<usize> {
+    pub fn cleanup_leftovers(&mut self, orphan_limit: usize) -> Result<usize> {
         let _wp = wd::watch("KeystoreDB::cleanup_leftovers");
 
         self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
             // Mark as orphaned any blobentry rows that have no associated keyentry row.
             // Apply a per-reboot limit to avoid the possibility of delayed startup.
-            tx.execute(
-                "UPDATE persistent.blobentry SET state = ?
+            let marked = tx
+                .execute(
+                    "UPDATE persistent.blobentry SET state = ?
                     WHERE id IN (
                       SELECT id FROM persistent.blobentry
                       WHERE keyentryid NOT IN (
                         SELECT id FROM persistent.keyentry
                       )
-                      LIMIT 5000);",
-                params![BlobState::Orphaned],
-            )
-            .context("Trying to mark orphaned blobs")
-            .need_gc()
+                      LIMIT ?);",
+                    params![BlobState::Orphaned, orphan_limit],
+                )
+                .context("Trying to mark orphaned blobs")?;
+            if marked > 0 {
+                info!("marked {marked} blobs without owners as orphaned");
+            }
+            Ok(()).need_gc()
         })
         .context(ks_err!())?;
 

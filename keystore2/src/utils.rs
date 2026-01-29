@@ -806,3 +806,11 @@ pub fn init_test_logging() {
             .with_max_level(log::LevelFilter::Debug),
     );
 }
+
+/// Enable logging in unit tests at a specific level
+#[cfg(test)]
+pub fn init_test_logging_at(max_level: log::LevelFilter) {
+    android_logger::init_once(
+        android_logger::Config::default().with_tag("keystore2_test").with_max_level(max_level),
+    );
+}
