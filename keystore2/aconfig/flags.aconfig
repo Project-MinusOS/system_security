@@ -78,3 +78,14 @@ flag {
   }
   is_fixed_read_only: true
 }
+
+flag {
+  name: "async_lock_state"
+  namespace: "hardware_backed_security"
+  description: "Handle lock state notifications asynchronously"
+  bug: "421860260"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+  is_fixed_read_only: true
+}
