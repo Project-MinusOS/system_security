@@ -49,7 +49,9 @@ use keystore2_apc_compat::{
 };
 use keystore2_crypto::{aes_gcm_decrypt, aes_gcm_encrypt, ZVec};
 use log::{debug, error, info, warn};
-use packagemanager_aidl::aidl::android::content::pm::IPackageManagerNative::IPackageManagerNative;
+use packagemanager_aidl::aidl::android::content::pm::IPackageManagerNative::{
+    IPackageManagerNative, LOCATION_SYSTEM,
+};
 use std::iter::IntoIterator;
 use std::thread::sleep;
 use std::time::Duration;
@@ -738,15 +740,30 @@ pub(crate) fn retry_get_interface<T: FromIBinder + ?Sized>(
     }
 }
 
-/// Return the target SDK version for a given app.
+/// Information about a specific app.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppInfo {
+    /// The target SDK for the app, if known.
+    ///
+    /// If a uid corresponds to multiple packages, this will be the lowest value across those
+    /// packages.
+    pub target_sdk: Option<i32>,
+    /// Whether the app is a system app.
+    ///
+    /// If a uid corresponds to multiple packages, this will be true if any of those packages
+    /// are system apps.
+    pub is_system_app: bool,
+}
+
+/// Return information about the given app.
 ///
 /// Involves round-trips to PackageManager.
-pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
+pub fn app_info_for_uid(uid: AppUid) -> AppInfo {
     let pm: Strong<dyn IPackageManagerNative> = match binder::get_interface("package_native") {
         Ok(pm) => pm,
         Err(e) => {
             warn!("failed to connect to PackageManager: {e:?}");
-            return None;
+            return AppInfo::default();
         }
     };
 
@@ -754,15 +771,15 @@ pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
         Ok(Some(infos)) => infos,
         Ok(None) => {
             warn!("no package info for {uid:?}");
-            return None;
+            return AppInfo::default();
         }
         Err(e) => {
             warn!("failed to get package info for {uid:?}: {e:?}");
-            return None;
+            return AppInfo::default();
         }
     };
 
-    let mut lowest_target_sdk = None;
+    let mut app_info = AppInfo::default();
     for pkg_info in pkg_infos {
         let Some(pkg_info) = pkg_info else {
             continue;
@@ -772,29 +789,34 @@ pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
             continue;
         }
         match pm.getTargetSdkVersionForPackage(pkg_name) {
-            Err(e) => {
-                warn!("failed to get target SDK version for {uid:?} '{pkg_name}': {e:?}");
-                continue;
-            }
+            Err(e) => warn!("failed to get target SDK version for {uid:?} '{pkg_name}': {e:?}"),
             Ok(target_sdk) if target_sdk <= 0 => {
                 warn!("unexpected target SDK version {target_sdk} for {uid:?} '{pkg_name}'");
-                continue;
             }
             Ok(target_sdk) => {
-                info!("{uid:?} '{pkg_name}' has target SDK {target_sdk:?}");
-                if let Some(prev_lowest) = lowest_target_sdk {
+                if let Some(prev_lowest) = app_info.target_sdk {
                     if target_sdk < prev_lowest {
-                        lowest_target_sdk = Some(target_sdk);
+                        app_info.target_sdk = Some(target_sdk);
                     }
                 } else {
-                    lowest_target_sdk = Some(target_sdk);
+                    app_info.target_sdk = Some(target_sdk);
                 }
             }
-        };
+        }
+        if !app_info.is_system_app {
+            match pm.getLocationFlags(pkg_name) {
+                Err(e) => warn!("failed to get location flags for {uid:?} '{pkg_name}': {e:?}"),
+                Ok(flags) => {
+                    if flags & LOCATION_SYSTEM != 0 {
+                        app_info.is_system_app = true;
+                    }
+                }
+            }
+        }
     }
 
-    info!("{uid:?} has target SDK {lowest_target_sdk:?}");
-    lowest_target_sdk
+    info!("{uid:?} has {app_info:?}");
+    app_info
 }
 
 /// Enable logging in unit tests.

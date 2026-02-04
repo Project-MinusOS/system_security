@@ -54,6 +54,21 @@ rust_binary {
     prefer_rlib: true,
 }
 
+rust_binary {
+    name: "prng_seeder_client",
+    srcs: ["test/src/main.rs"],
+    prefer_rlib: true,
+    rustlibs: [
+        "libanyhow",
+        "libclap",
+        "libenv_logger",
+        "libhex",
+        "liblogger",
+        "liblog_rust",
+        "libnix",
+    ]
+}
+
 rust_test {
     name: "prng_seeder.test",
     defaults: ["prng_seeder_defaults"],

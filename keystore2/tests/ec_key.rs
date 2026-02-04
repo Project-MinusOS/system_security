@@ -347,6 +347,7 @@ fn keystore2_ec_25519_generate_key_success() {
 /// shouldn't support these digest modes. Test should fail to create operations with an error
 /// `UNSUPPORTED_DIGEST`.
 #[test]
+#[allow(clippy::unnecessary_unwrap)]
 fn keystore2_ec_25519_generate_key_fail() {
     let sl = SecLevel::tee();
 

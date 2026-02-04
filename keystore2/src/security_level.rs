@@ -33,10 +33,10 @@ use crate::remote_provisioning::RemProvState;
 use crate::security_level_manager;
 use crate::super_key::{KeyBlob, SuperKeyManager};
 use crate::utils::{
-    check_device_attestation_permissions, check_key_permission,
+    app_info_for_uid, check_device_attestation_permissions, check_key_permission,
     check_unique_id_attestation_permissions, count_key_entries, is_device_id_attestation_tag,
-    key_characteristics_to_internal, log_security_safe_params, target_sdk_for_uid, watchdog as wd,
-    AndroidUserId, AppUid, Challenge, UNDEFINED_NOT_AFTER,
+    key_characteristics_to_internal, log_security_safe_params, watchdog as wd, AndroidUserId,
+    AppUid, Challenge, UNDEFINED_NOT_AFTER,
 };
 use crate::{
     database::{
@@ -558,19 +558,29 @@ impl KeystoreSecurityLevel {
         };
 
         // The per-uid limits for keys are based on the app's target SDK.
-        // Determining the target SDK involve PackageManager round trips, so only
+        // Determining the target SDK involves PackageManager round trips, so only
         // check target SDK if necessary.
         if count < API_37_PER_UID_KEY_LIMIT {
             // Below the lower limit => definitely OK.
             return Ok(());
         }
-        let targets_sdk37 = matches!(target_sdk_for_uid(uid), Some(target_sdk) if target_sdk >= 37);
-        let limit =
-            if targets_sdk37 { API_37_PER_UID_KEY_LIMIT } else { DEFAULT_PER_UID_KEY_LIMIT };
+        let info = app_info_for_uid(uid);
+        let targets_sdk37 = matches!(info.target_sdk, Some(target_sdk) if target_sdk >= 37);
+        let limit = if info.is_system_app {
+            // System apps get the higher limit.
+            DEFAULT_PER_UID_KEY_LIMIT
+        } else if targets_sdk37 {
+            // Apps targeting SDK37+ get the lower limit.
+            API_37_PER_UID_KEY_LIMIT
+        } else {
+            // Everything else gets the default (higher) limit.
+            DEFAULT_PER_UID_KEY_LIMIT
+        };
 
         if count >= limit {
             error!("failing key creation for {uid:?} with excessive ({count}) keys",);
             if targets_sdk37 {
+                // Apps targeting SDK37+ can cope with the new error code.
                 Err(error::Error::Rc(ResponseCode::TOO_MANY_APP_KEYS_SDK37)).context(ks_err!(
                     "failed key creation as {uid:?} (targeting SDK37+) has too many ({count}) existing keys",
                 ))
