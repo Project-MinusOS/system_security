@@ -19,11 +19,11 @@ use crate::error::{map_binder_status, Error, ErrorCode};
 use crate::globals::{get_timestamp_service, ASYNC_TASK, DB, ENFORCEMENTS};
 use crate::key_parameter::{KeyParameter, KeyParameterValue};
 use crate::{
-    authorization::Error as AuthzError, super_key::{SuperEncryptionType},
+    authorization::{LockState, LockStateNotification, Error as AuthzError}, super_key::{SuperEncryptionType},
     boot_level_keys::BootLevel,
     database::{AuthTokenEntry, BootTime},
     globals::SUPER_KEY,
-    utils::{AndroidUserId, SecureUserId, Challenge},
+    utils::{AndroidUserId, SecureUserId, Challenge, watchdog as wd},
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, ErrorCode::ErrorCode as Ec, HardwareAuthToken::HardwareAuthToken,
@@ -44,7 +44,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc, Mutex, Weak,
+        Arc, Condvar, Mutex, RwLock, Weak,
     },
     time::SystemTime,
 };
@@ -368,6 +368,9 @@ pub struct Enforcements {
     /// This hash set contains the user ids for whom the device is currently unlocked. If a user id
     /// is not in the set, it implies that the device is locked for the user.
     device_unlocked_set: Mutex<HashSet<AndroidUserId>>,
+    /// Channel that communicates with a separate thread that handles the lock state notification
+    /// queue.
+    lock_state_channel: RwLock<Option<crossbeam_channel::Sender<LockStateNotification>>>,
     /// This field maps outstanding auth challenges to their operations. When an auth token with the
     /// right challenge is received it is passed to the map using
     /// [`TokenReceiverMap::add_auth_token()`] which removes the entry from the map. If an entry
@@ -673,9 +676,42 @@ impl Enforcements {
         }
     }
 
+    /// Configure a channel to be used for synchronizing device lock status.
+    pub fn install_lock_state_channel(
+        &self,
+        channel: crossbeam_channel::Sender<LockStateNotification>,
+    ) {
+        info!("Setting lock state channel");
+        *self.lock_state_channel.write().unwrap() = Some(channel);
+    }
+
     /// Check if the device is locked for the given user. If there's no entry yet for the user,
     /// we assume that the device is locked
     fn is_device_locked(&self, user: AndroidUserId) -> bool {
+        if let Some(channel) = &*self.lock_state_channel.read().unwrap() {
+            // The presence of a channel indicates that there is a separate thread handling lock
+            // status notifications from a queue. Before reporting the lock state, we want to ensure
+            // that any currently-pending notifications in the queue are processed.
+            if !channel.is_empty() {
+                // There are pending notifications, so add a marker to the queue...
+                let _wp = wd::watch("Enforcements::is_device_locked sync with non-empty queue");
+                let pair = Arc::new((Mutex::new(false), Condvar::new()));
+                let op = LockStateNotification { user, state: LockState::Sync(pair.clone()) };
+                info!("add {op:?} to notification queue");
+                let result = channel.send(op);
+
+                if let Err(e) = result {
+                    error!("Failed to sync with lock state queue: {e:?}");
+                } else {
+                    // ... and block until the marker is reached, to ensure that lock status is
+                    // up-to-date before returning an answer.
+                    let (lock, cv) = &*pair;
+                    let reached = lock.lock().unwrap();
+                    let _guard = cv.wait_while(reached, |reached| !*reached).unwrap();
+                }
+            }
+        }
+
         let set = self.device_unlocked_set.lock().unwrap();
         !set.contains(&user)
     }

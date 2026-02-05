@@ -1103,6 +1103,7 @@ fn test_unlocked_device_required() {
         writer.send(&BarrierReached {}); // D done.
 
         // Action E: delete an unlocked-device-required key while the device is locked.
+        reader.recv();
         let result = ks2.deleteKey(&key);
         info!("E: delete unlocked-device-required key while locked => {result:?}");
         expect!(result.is_ok(), "deleteKey failed: {result:?}");
