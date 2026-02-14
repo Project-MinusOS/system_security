@@ -93,9 +93,9 @@ macro_rules! declare_req_rsp_enums {
             $( $cname($reqtyp), )*
         }
 
-        impl $reqenum {
+        impl $crate::operations::Code<$cenum> for $reqenum {
             /// Return the message code value corresponding to a request variant.
-            pub fn code(&self) -> $cenum {
+            fn code(&self) -> $cenum {
                 match self {
                     $( Self::$cname(_) => $cenum::$cname, )*
                 }
@@ -163,33 +163,29 @@ macro_rules! declare_req_rsp_enums {
 
         $(
             impl $crate::operations::Code<$cenum> for $reqtyp {
-                const CODE: $cenum = $cenum::$cname;
+                fn code(&self) -> $cenum {
+                    $cenum::$cname
+                }
             }
         )*
 
         $(
             impl $crate::operations::Code<$cenum> for $rsptyp {
-                const CODE: $cenum = $cenum::$cname;
+                fn code(&self) -> $cenum {
+                    $cenum::$cname
+                }
             }
         )*
     };
 }
 
-/// Trait that associates an enum value of the specified type with a type.
-///
-/// Values of the `enum` type `T` are used to identify particular message types.
-/// A message type implements `Code<T>` to indicate which `enum` value it is
-/// associated with.
+/// Trait that associates self with an enum value of the specified type.
 ///
 /// For example, an `enum WhichMsg { Hello, Goodbye }` could be used to distinguish
 /// between `struct HelloMsg` and `struct GoodbyeMsg` instances, in which case the
-/// latter types would both implement `Code<WhichMsg>` with `CODE` values of
-/// `WhichMsg::Hello` and `WhichMsg::Goodbye` respectively.
+/// latter types would both implement `Code<WhichMsg>` and return `WhichMsg::Hello`
+/// and `WhichMsg::Goodbye` respectively from the `code()` method.
 pub trait Code<T> {
-    /// The enum value identifying this request/response.
-    const CODE: T;
-    /// Return the enum value associated with the underlying type of this item.
-    fn code(&self) -> T {
-        Self::CODE
-    }
+    /// Return the associated enum value.
+    fn code(&self) -> T;
 }
