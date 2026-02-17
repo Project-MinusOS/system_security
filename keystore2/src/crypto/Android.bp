@@ -89,7 +89,6 @@ rust_bindgen {
         "--allowlist-function=randomBytes",
         "--allowlist-type=EC_KEY",
         "--allowlist-type=EC_POINT",
-        "--allowlist-var=EC_MAX_BYTES",
         "--allowlist-var=EVP_MAX_MD_SIZE",
     ],
     cflags: ["-DBORINGSSL_NO_CXX"],

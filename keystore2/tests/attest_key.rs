@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
+use crate::test_utils::{
     app_attest_key_feature_exists, device_id_attestation_check_acceptable_error,
     device_id_attestation_feature_exists, get_attest_id_value,
     is_second_imei_id_attestation_required, skip_device_id_attest_tests,

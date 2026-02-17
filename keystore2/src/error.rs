@@ -27,6 +27,7 @@
 //! Keystore functions should use `anyhow::Result` to return error conditions, and context should
 //! be added every time an error is forwarded.
 
+use crate::utils::AppUid;
 pub use android_hardware_security_keymint::aidl::android::hardware::security::keymint::ErrorCode::ErrorCode;
 use android_security_rkp_aidl::aidl::android::security::rkp::IGetKeyCallback::ErrorCode::ErrorCode as GetKeyErrorCode;
 pub use android_system_keystore2::aidl::android::system::keystore2::ResponseCode::ResponseCode;
@@ -182,7 +183,7 @@ pub fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
         e.root_cause().downcast_ref::<Error>(),
         Some(Error::Rc(ResponseCode::KEY_NOT_FOUND))
     ) {
-        error!("{e:?}");
+        error!("{e:?} for {:?}", AppUid::calling());
     }
     into_binder(e)
 }

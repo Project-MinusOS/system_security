@@ -48,6 +48,7 @@ flag {
   description: "Apply limits of #keys per-uid"
   bug: "395078130"
   is_fixed_read_only: true
+  is_exported: true
 }
 
 flag {
@@ -64,5 +65,27 @@ flag {
   namespace: "hardware_backed_security"
   description: "Emit second generation of Keystore2 atoms"
   bug: "393058909"
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "faster_rebind_cleanup"
+  namespace: "hardware_backed_security"
+  description: "Perform faster cleanup of orphaned blobs from rebinds"
+  bug: "462372417"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "async_lock_state"
+  namespace: "hardware_backed_security"
+  description: "Handle lock state notifications asynchronously"
+  bug: "421860260"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
   is_fixed_read_only: true
 }

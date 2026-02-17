@@ -12,24 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// TODO: rename modules to strip text repeated from crate name ("keystore2_client_" and "_tests").
-pub mod keystore2_client_3des_key_tests;
-pub mod keystore2_client_aes_key_tests;
-pub mod keystore2_client_attest_key_tests;
-pub mod keystore2_client_authorizations_tests;
-pub mod keystore2_client_delete_key_tests;
-pub mod keystore2_client_device_unique_attestation_tests;
-pub mod keystore2_client_ec_key_tests;
-pub mod keystore2_client_grant_key_tests;
-pub mod keystore2_client_hmac_key_tests;
-pub mod keystore2_client_import_keys_tests;
-pub mod keystore2_client_key_agreement_tests;
-pub mod keystore2_client_key_id_domain_tests;
-pub mod keystore2_client_list_entries_tests;
-pub mod keystore2_client_operation_tests;
-pub mod keystore2_client_rsa_key_tests;
-pub mod keystore2_client_test_utils;
-pub mod keystore2_client_update_subcomponent_tests;
-
+pub mod aes_key;
+pub mod attest_key;
+pub mod authorizations;
+pub mod delete_key;
+pub mod device_unique_attestation;
+pub mod ec_key;
+pub mod grant_key;
+pub mod hmac_key;
+pub mod import_keys;
+pub mod key_agreement;
+pub mod key_id_domain;
+pub mod list_entries;
 pub mod mldsa;
+pub mod operation;
+pub mod rsa_key;
+pub mod test_utils;
+pub mod three_des_key;
+pub mod update_subcomponent;
 pub mod user_auth;

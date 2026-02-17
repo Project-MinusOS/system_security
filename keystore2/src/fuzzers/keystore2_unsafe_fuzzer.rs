@@ -23,7 +23,7 @@ use keystore2_crypto::{
     aes_gcm_decrypt, aes_gcm_encrypt, ec_key_generate_key, ec_key_get0_public_key,
     ec_key_marshal_private_key, ec_key_parse_private_key, ec_point_oct_to_point,
     ec_point_point_to_oct, ecdh_compute_key, generate_random_data, hkdf_expand, hkdf_extract,
-    hmac_sha256, parse_subject_from_certificate, Password, ZVec,
+    hmac_sha256, parse_subject_from_certificate, EcdhComputeKeyVersion, Password, ZVec,
 };
 use keystore2_hal_names::get_hidl_instances;
 use keystore2_selinux::{check_access, setcon, Backend, Context, KeystoreKeyBackend};
@@ -83,6 +83,7 @@ enum FuzzCommand<'a> {
     PublicPrivateKey {
         ec_priv_buf: &'a [u8],
         ec_oct_buf: &'a [u8],
+        ecdh_compute_key_version: u8,
     },
     ParseSubjectFromCertificate {
         parse_buf: &'a [u8],
@@ -150,7 +151,7 @@ fuzz_target!(|commands: Vec<FuzzCommand>| {
             FuzzCommand::HkdfExpand { out_len, hkdf_prk, hkdf_info } => {
                 let _res = hkdf_expand(out_len % MAX_SIZE_MODIFIER, hkdf_prk, hkdf_info);
             }
-            FuzzCommand::PublicPrivateKey { ec_priv_buf, ec_oct_buf } => {
+            FuzzCommand::PublicPrivateKey { ec_priv_buf, ec_oct_buf, ecdh_compute_key_version } => {
                 let check_private_key = {
                     let mut check_private_key = ec_key_parse_private_key(ec_priv_buf);
                     if check_private_key.is_err() {
@@ -167,7 +168,12 @@ fuzz_target!(|commands: Vec<FuzzCommand>| {
                     if check_ecpoint.is_ok() {
                         let public_key = check_ecpoint.unwrap();
                         let _res = ec_point_point_to_oct(public_key.get_point());
-                        let _res = ecdh_compute_key(public_key.get_point(), &private_key);
+                        let version = if ecdh_compute_key_version % 2 == 0 {
+                            EcdhComputeKeyVersion::LegacyTruncated
+                        } else {
+                            EcdhComputeKeyVersion::Current
+                        };
+                        let _res = ecdh_compute_key(public_key.get_point(), &private_key, version);
                     }
                 }
             }

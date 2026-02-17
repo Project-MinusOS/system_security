@@ -14,8 +14,8 @@
 
 //! Tests for user authentication interactions (via `IKeystoreAuthorization`).
 
-use crate::keystore2_client_test_utils::{
-    BarrierReached, BarrierReachedWithData, get_vsr_api_level
+use crate::test_utils::{
+    BarrierReached, BarrierReachedWithData,
 };
 use android_security_authorization::aidl::android::security::authorization::{
     IKeystoreAuthorization::IKeystoreAuthorization
@@ -47,6 +47,7 @@ use keystore2_test_utils::{
 use log::{warn, info};
 use rustutils::android::users::AID_USER_OFFSET;
 use std::{time::Duration, thread::sleep};
+use keystore2_test_utils::key_generations::get_vsr_api_level;
 
 /// Test user ID.
 const TEST_USER_ID: i32 = 100;
@@ -1088,7 +1089,7 @@ fn test_unlocked_device_required() {
         reader.recv();
         let result = sec_level.createOperation(&key, &params, UNFORCED);
         info!("C: use unlocked-device-required key while lskf-unlocked => {result:?}");
-        expect!(result.is_ok(), "failed with {result:?}");
+        expect!(result.is_ok(), "createOperation failed: {result:?}");
         abort_op(result);
         writer.send(&BarrierReached {}); // C done.
 
@@ -1100,6 +1101,14 @@ fn test_unlocked_device_required() {
         expect!(result.is_ok(), "createOperation failed: {result:?}");
         abort_op(result);
         writer.send(&BarrierReached {}); // D done.
+
+        // Action E: delete an unlocked-device-required key while the device is locked.
+        reader.recv();
+        let result = ks2.deleteKey(&key);
+        info!("E: delete unlocked-device-required key while locked => {result:?}");
+        expect!(result.is_ok(), "deleteKey failed: {result:?}");
+
+        writer.send(&BarrierReached {}); // E done.
 
         Ok(())
     };
@@ -1160,6 +1169,15 @@ fn test_unlocked_device_required() {
     auth_service.onDeviceUnlocked(user_id, None).unwrap();
 
     info!("trigger child process action D while weak-unlocked and wait for completion");
+    child_handle.send(&BarrierReached {});
+    child_handle.recv_or_die();
+
+    // Move to locked and don't allow weak unlock, so super keys are wiped.
+    auth_service
+        .onDeviceLocked(user_id, &[bio_fake_sid1, bio_fake_sid2], WEAK_UNLOCK_DISABLED)
+        .unwrap();
+
+    info!("trigger child process action E while locked and wait for completion");
     child_handle.send(&BarrierReached {});
     child_handle.recv_or_die();
 

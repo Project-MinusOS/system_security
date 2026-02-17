@@ -27,22 +27,7 @@ rust_library {
     rustlibs: [
         "libhal_wire",
     ],
-}
-
-rust_library_rlib {
-    name: "libhal_ta_nostd",
-    crate_name: "hal_ta",
-    srcs: ["src/lib.rs"],
-    vendor_available: true,
-    edition: "2021",
-    lints: "android",
-    rustlibs: [
-        "libhal_wire_nostd",
-    ],
-    prefer_rlib: true,
-    no_stdlibs: true,
-    stdlibs: [
-        "libcompiler_builtins.rust_sysroot",
-        "libcore.rust_sysroot",
-    ],
+    no_std: {
+        enabled: true,
+    },
 }
