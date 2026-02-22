@@ -14,10 +14,12 @@
 
 use crate::metrics_store::*;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
-    HardwareAuthenticatorType::HardwareAuthenticatorType as AuthType, KeyParameter::KeyParameter,
-    KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
+    Algorithm::Algorithm, HardwareAuthenticatorType::HardwareAuthenticatorType as AuthType,
+    KeyParameter::KeyParameter, KeyParameterValue::KeyParameterValue, MlDsaVariant::MlDsaVariant,
+    SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_security_metrics::aidl::android::security::metrics::{
+    Algorithm::Algorithm as MetricsAlgorithm,
     HardwareAuthenticatorType::HardwareAuthenticatorType as MetricsAuthType,
     SecurityLevel::SecurityLevel as MetricsSecurityLevel,
 };
@@ -25,7 +27,7 @@ use android_security_metrics::aidl::android::security::metrics::{
 #[test]
 fn test_enum_show() {
     let algo = MetricsAlgorithm::RSA;
-    assert_eq!("RSA ", algo.show());
+    assert_eq!("RSA    ", algo.show());
     let algo = MetricsAlgorithm(42);
     assert_eq!("Unknown(42)", algo.show());
 }
@@ -157,6 +159,101 @@ fn test_security_level() {
             atom_with_auth_info,
             KeystoreAtomPayload::KeyCreationWithAuthInfo(a)
                 if a.security_level == expected
+        ));
+    }
+}
+
+fn create_key_param_with_algorithm(algorithm: Algorithm) -> KeyParameter {
+    KeyParameter { tag: Tag::ALGORITHM, value: KeyParameterValue::Algorithm(algorithm) }
+}
+
+fn create_key_param_with_mldsa_variant(variant: MlDsaVariant) -> KeyParameter {
+    KeyParameter { tag: Tag::ML_DSA_VARIANT, value: KeyParameterValue::MlDsaVariant(variant) }
+}
+
+#[test]
+fn test_algorithm() {
+    let test_cases: &[(&[KeyParameter], MetricsAlgorithm)] = &[
+        (&[], MetricsAlgorithm::ALGORITHM_UNSPECIFIED),
+        (&[create_key_param_with_algorithm(Algorithm::RSA)], MetricsAlgorithm::RSA),
+        (&[create_key_param_with_algorithm(Algorithm::EC)], MetricsAlgorithm::EC),
+        (&[create_key_param_with_algorithm(Algorithm::AES)], MetricsAlgorithm::AES),
+        (&[create_key_param_with_algorithm(Algorithm::TRIPLE_DES)], MetricsAlgorithm::TRIPLE_DES),
+        (&[create_key_param_with_algorithm(Algorithm::HMAC)], MetricsAlgorithm::HMAC),
+        // Lots of test cases for ML-DSA: the algorithm is determined from the
+        // MlDsaVariant parameter, not the Algorithm parameter.
+        (
+            &[create_key_param_with_algorithm(Algorithm::ML_DSA)],
+            MetricsAlgorithm::ALGORITHM_UNSPECIFIED,
+        ),
+        (
+            &[create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_65)],
+            MetricsAlgorithm::ML_DSA_65,
+        ),
+        (
+            &[create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_87)],
+            MetricsAlgorithm::ML_DSA_87,
+        ),
+        (
+            &[
+                create_key_param_with_algorithm(Algorithm::ML_DSA),
+                create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_65),
+            ],
+            MetricsAlgorithm::ML_DSA_65,
+        ),
+        (
+            &[
+                create_key_param_with_algorithm(Algorithm::ML_DSA),
+                create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_87),
+            ],
+            MetricsAlgorithm::ML_DSA_87,
+        ),
+        (
+            &[
+                create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_65),
+                create_key_param_with_algorithm(Algorithm::ML_DSA),
+            ],
+            MetricsAlgorithm::ML_DSA_65,
+        ),
+        (
+            &[
+                create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_87),
+                create_key_param_with_algorithm(Algorithm::ML_DSA),
+            ],
+            MetricsAlgorithm::ML_DSA_87,
+        ),
+        (
+            &[
+                create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_87),
+                create_key_param_with_algorithm(Algorithm::RSA),
+            ],
+            MetricsAlgorithm::RSA,
+        ),
+        (
+            &[
+                create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_65),
+                create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_87),
+            ],
+            MetricsAlgorithm::ML_DSA_87,
+        ),
+    ];
+    for (key_params, expected) in test_cases {
+        let (atom_with_general_info, _, atom_with_purpose_and_modes) =
+            process_key_creation_event_stats(
+                SecurityLevel::SOFTWARE,
+                key_params,
+                KeyOrigin::GENERATED,
+                &Ok(()),
+            );
+        assert!(matches!(
+            atom_with_general_info,
+            KeystoreAtomPayload::KeyCreationWithGeneralInfo(a)
+                if a.algorithm == *expected
+        ));
+        assert!(matches!(
+            atom_with_purpose_and_modes,
+            KeystoreAtomPayload::KeyCreationWithPurposeAndModesInfo(a)
+                if a.algorithm == *expected
         ));
     }
 }

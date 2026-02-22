@@ -1023,9 +1023,18 @@ fn test_auth_bound_per_op_wrong_auth_type_failure() {
 
 #[test]
 fn test_unlocked_device_required() {
-    let gk_fake_sid = GK_FAKE_SID_BASE + 3;
-    let bio_fake_sid1 = BIO_FAKE_SID_BASE + 9;
-    let bio_fake_sid2 = BIO_FAKE_SID_BASE + 10;
+    test_unlocked_device_required_with(false);
+}
+
+#[test]
+fn test_unlocked_device_required_created_while_locked() {
+    test_unlocked_device_required_with(true);
+}
+
+fn test_unlocked_device_required_with(create_while_locked: bool) {
+    let gk_sid = GK_FAKE_SID_BASE + 3;
+    let bio_sid1 = BIO_FAKE_SID_BASE + 9;
+    let bio_sid2 = BIO_FAKE_SID_BASE + 10;
     android_logger::init_once(
         android_logger::Config::default()
             .with_tag("keystore2_client_tests")
@@ -1045,6 +1054,10 @@ fn test_unlocked_device_required() {
 
         // Now we're in a new process, wait to be notified before starting.
         reader.recv();
+        info!(
+            "A: create unlocked-device-required key while {}",
+            if create_while_locked { "locked" } else { "unlocked" }
+        );
 
         // Action A: create a new unlocked-device-required key (which thus requires
         // super-encryption), while the device is unlocked.
@@ -1078,6 +1091,7 @@ fn test_unlocked_device_required() {
 
         // Action B: fail to use the unlocked-device-required key while locked.
         reader.recv();
+        info!("B: use unlocked-device-required key while locked");
         let params = AuthSetBuilder::new().purpose(KeyPurpose::SIGN).digest(Digest::SHA_2_256);
         let result = sec_level.createOperation(&key, &params, UNFORCED);
         info!("B: use unlocked-device-required key while locked => {result:?}");
@@ -1087,15 +1101,24 @@ fn test_unlocked_device_required() {
         // Action C: try to use the unlocked-device-required key while unlocked with a
         // password.
         reader.recv();
+        info!("C: use unlocked-device-required key while lskf-unlocked");
+
         let result = sec_level.createOperation(&key, &params, UNFORCED);
-        info!("C: use unlocked-device-required key while lskf-unlocked => {result:?}");
+        info!("C: use unlocked-device-required key while lskf-unlocked #1 => {result:?}");
         expect!(result.is_ok(), "createOperation failed: {result:?}");
         abort_op(result);
+
+        let result = sec_level.createOperation(&key, &params, UNFORCED);
+        info!("C: use unlocked-device-required key while lskf-unlocked #2 => {result:?}");
+        expect!(result.is_ok(), "createOperation failed: {result:?}");
+        abort_op(result);
+
         writer.send(&BarrierReached {}); // C done.
 
         // Action D: try to use the unlocked-device-required key while unlocked with a weak
         // biometric.
         reader.recv();
+        info!("D: use unlocked-device-required key while weak-locked");
         let result = sec_level.createOperation(&key, &params, UNFORCED);
         info!("D: use unlocked-device-required key while weak-locked => {result:?}");
         expect!(result.is_ok(), "createOperation failed: {result:?}");
@@ -1104,6 +1127,7 @@ fn test_unlocked_device_required() {
 
         // Action E: delete an unlocked-device-required key while the device is locked.
         reader.recv();
+        info!("E: delete unlocked-device-required key while locked");
         let result = ks2.deleteKey(&key);
         info!("E: delete unlocked-device-required key while locked => {result:?}");
         expect!(result.is_ok(), "deleteKey failed: {result:?}");
@@ -1135,51 +1159,54 @@ fn test_unlocked_device_required() {
     let auth_service = get_authorization();
 
     // Lock and unlock to ensure super keys are already created.
-    auth_service
-        .onDeviceLocked(user_id, &[bio_fake_sid1, bio_fake_sid2], WEAK_UNLOCK_DISABLED)
-        .unwrap();
+    auth_service.onDeviceLocked(user_id, &[bio_sid1, bio_sid2], WEAK_UNLOCK_DISABLED).unwrap();
     auth_service.onDeviceUnlocked(user_id, Some(SYNTHETIC_PASSWORD)).unwrap();
-    auth_service.addAuthToken(&fake_lskf_token(gk_fake_sid)).unwrap();
+    auth_service.addAuthToken(&fake_lskf_token(gk_sid)).unwrap();
 
-    info!("trigger child process action A while unlocked and wait for completion");
+    if create_while_locked {
+        // Move to locked and don't allow weak unlock, so super keys are wiped.
+        auth_service.onDeviceLocked(user_id, &[bio_sid1, bio_sid2], WEAK_UNLOCK_DISABLED).unwrap();
+    }
+
+    info!("trigger child process action A while unlocked and wait for completion...");
     child_handle.send(&BarrierReached {});
     child_handle.recv_or_die();
+    info!("trigger child process action A while unlocked and wait for completion...done");
 
     // Move to locked and don't allow weak unlock, so super keys are wiped.
-    auth_service
-        .onDeviceLocked(user_id, &[bio_fake_sid1, bio_fake_sid2], WEAK_UNLOCK_DISABLED)
-        .unwrap();
+    auth_service.onDeviceLocked(user_id, &[bio_sid1, bio_sid2], WEAK_UNLOCK_DISABLED).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
-    info!("trigger child process action B while locked and wait for completion");
+    info!("trigger child process action B while locked and wait for completion...");
     child_handle.send(&BarrierReached {});
     child_handle.recv_or_die();
+    info!("trigger child process action B while locked and wait for completion...done");
 
     // Unlock with password => loads super key from database.
     auth_service.onDeviceUnlocked(user_id, Some(SYNTHETIC_PASSWORD)).unwrap();
-    auth_service.addAuthToken(&fake_lskf_token(gk_fake_sid)).unwrap();
+    auth_service.addAuthToken(&fake_lskf_token(gk_sid)).unwrap();
 
-    info!("trigger child process action C while lskf-unlocked and wait for completion");
+    info!("trigger child process action C while lskf-unlocked and wait for completion...");
     child_handle.send(&BarrierReached {});
     child_handle.recv_or_die();
+    info!("trigger child process action C while lskf-unlocked and wait for completion...done");
 
     // Move to locked and allow weak unlock, then do a weak unlock.
-    auth_service
-        .onDeviceLocked(user_id, &[bio_fake_sid1, bio_fake_sid2], WEAK_UNLOCK_ENABLED)
-        .unwrap();
+    auth_service.onDeviceLocked(user_id, &[bio_sid1, bio_sid2], WEAK_UNLOCK_ENABLED).unwrap();
     auth_service.onDeviceUnlocked(user_id, None).unwrap();
 
-    info!("trigger child process action D while weak-unlocked and wait for completion");
+    info!("trigger child process action D while weak-unlocked and wait for completion...");
     child_handle.send(&BarrierReached {});
     child_handle.recv_or_die();
+    info!("trigger child process action D while weak-unlocked and wait for completion...done");
 
     // Move to locked and don't allow weak unlock, so super keys are wiped.
-    auth_service
-        .onDeviceLocked(user_id, &[bio_fake_sid1, bio_fake_sid2], WEAK_UNLOCK_DISABLED)
-        .unwrap();
+    auth_service.onDeviceLocked(user_id, &[bio_sid1, bio_sid2], WEAK_UNLOCK_DISABLED).unwrap();
 
-    info!("trigger child process action E while locked and wait for completion");
+    info!("trigger child process action E while locked and wait for completion...");
     child_handle.send(&BarrierReached {});
     child_handle.recv_or_die();
+    info!("trigger child process action E while locked and wait for completion...done");
 
     assert_eq!(child_handle.get_result(), Ok(()), "child process failed");
 }
