@@ -131,9 +131,9 @@ use crate::error::{
     error_to_serialized_error, into_binder, into_logged_binder, map_km_error, Error, ErrorCode,
     ResponseCode, SerializedError,
 };
-use crate::ks_err;
 use crate::metrics_store::log_key_operation_event_stats;
 use crate::utils::{watchdog as wd, AppUid};
+use crate::{ks_err, log_client_err};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     IKeyMintOperation::IKeyMintOperation, KeyParameter::KeyParameter, KeyPurpose::KeyPurpose,
     SecurityLevel::SecurityLevel,
@@ -868,7 +868,7 @@ impl IKeystoreOperation for KeystoreOperation {
                 // There is no reason to clutter the log with it. It is never the cause
                 // for a true problem.
                 Some(Error::Km(ErrorCode::INVALID_OPERATION_HANDLE)) => {}
-                _ => error!("{e:?}"),
+                _ => log_client_err!(e),
             };
             into_binder(e)
         })

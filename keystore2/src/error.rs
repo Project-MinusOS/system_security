@@ -35,7 +35,7 @@ use android_system_keystore2::binder::{
     ExceptionCode, Result as BinderResult, Status as BinderStatus, StatusCode,
 };
 use keystore2_selinux as selinux;
-use log::{error, warn};
+use log::{error, log, warn, Level};
 use postprocessor_client::Error as PostProcessorError;
 use rkpd_client::Error as RkpdError;
 use std::cmp::PartialEq;
@@ -62,6 +62,29 @@ pub enum Error {
     BinderTransaction(StatusCode),
 }
 
+/// Log a client-triggered error according to the error log level policy.
+pub fn log_client_error(level: Option<Level>, e: &anyhow::Error) {
+    if let Some(level) = level {
+        let uid = AppUid::calling();
+        log!(level, "{e:?} for {uid:?}");
+    }
+}
+
+/// Log a client-triggered error.
+///
+/// Use `log_client_err!(e)` to log according to the error log level policy.
+/// This policy reduces noise for expected or benign client-triggered errors.
+/// Use `log_client_err!(e, level)` to override the default error log level.
+#[macro_export]
+macro_rules! log_client_err {
+    ($e:expr) => {
+        $crate::error::log_client_error($crate::error::get_log_level(&$e), &$e)
+    };
+    ($e:expr, $level:expr) => {
+        $crate::error::log_client_error(Some($level), &$e)
+    };
+}
+
 impl Error {
     /// Short hand for `Error::Rc(ResponseCode::SYSTEM_ERROR)`
     pub fn sys() -> Self {
@@ -71,6 +94,28 @@ impl Error {
     /// Short hand for `Error::Rc(ResponseCode::PERMISSION_DENIED)`
     pub fn perm() -> Self {
         Error::Rc(ResponseCode::PERMISSION_DENIED)
+    }
+
+    /// Returns the log level for the error.
+    pub fn log_level(&self) -> Option<Level> {
+        match self {
+            // Client app using a wrong alias
+            Error::Rc(ResponseCode::KEY_NOT_FOUND) => None,
+            // Some clients use this error to determine if the device has been unlocked recently
+            Error::Km(ErrorCode::KEY_USER_NOT_AUTHENTICATED) => Some(Level::Info),
+            // Optional feature that other system components (e.g. vold) try to use if present,
+            // but can cope and fall back if the feature is unavailable.
+            Error::Km(ErrorCode::ROLLBACK_RESISTANCE_UNAVAILABLE) => Some(Level::Info),
+            _ => Some(Level::Error),
+        }
+    }
+}
+
+/// Get the log level for the given error based on its root cause.
+pub fn get_log_level(e: &anyhow::Error) -> Option<Level> {
+    match e.root_cause().downcast_ref::<Error>() {
+        Some(e) => e.log_level(),
+        _ => Some(Level::Error),
     }
 }
 
@@ -178,13 +223,7 @@ pub fn map_binder_status_code<T>(r: Result<T, StatusCode>) -> Result<T, Error> {
 /// Convert an [`anyhow::Error`] to a [`binder::Status`], logging the value
 /// along the way (except if it is `KEY_NOT_FOUND`).
 pub fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
-    // Log everything except key not found.
-    if !matches!(
-        e.root_cause().downcast_ref::<Error>(),
-        Some(Error::Rc(ResponseCode::KEY_NOT_FOUND))
-    ) {
-        error!("{e:?} for {:?}", AppUid::calling());
-    }
+    log_client_err!(e);
     into_binder(e)
 }
 

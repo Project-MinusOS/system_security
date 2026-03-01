@@ -14,12 +14,14 @@
 
 //! This is the Keystore 2.0 Enforcements module.
 // TODO: more description to follow.
-use crate::ks_err;
+
+use crate::async_task::AsyncTask;
 use crate::error::{map_binder_status, Error, ErrorCode};
 use crate::globals::{get_timestamp_service, ASYNC_TASK, DB, ENFORCEMENTS};
 use crate::key_parameter::{KeyParameter, KeyParameterValue};
+use crate::ks_err;
 use crate::{
-    authorization::{LockState, LockStateNotification, Error as AuthzError}, super_key::{SuperEncryptionType},
+    authorization::{Error as AuthzError}, super_key::{SuperEncryptionType},
     boot_level_keys::BootLevel,
     database::{AuthTokenEntry, BootTime},
     globals::SUPER_KEY,
@@ -370,7 +372,7 @@ pub struct Enforcements {
     device_unlocked_set: Mutex<HashSet<AndroidUserId>>,
     /// Channel that communicates with a separate thread that handles the lock state notification
     /// queue.
-    lock_state_channel: RwLock<Option<crossbeam_channel::Sender<LockStateNotification>>>,
+    lock_state_task: RwLock<Option<Arc<AsyncTask>>>,
     /// This field maps outstanding auth challenges to their operations. When an auth token with the
     /// right challenge is received it is passed to the map using
     /// [`TokenReceiverMap::add_auth_token()`] which removes the entry from the map. If an entry
@@ -676,39 +678,39 @@ impl Enforcements {
         }
     }
 
-    /// Configure a channel to be used for synchronizing device lock status.
-    pub fn install_lock_state_channel(
-        &self,
-        channel: crossbeam_channel::Sender<LockStateNotification>,
-    ) {
-        info!("Setting lock state channel");
-        *self.lock_state_channel.write().unwrap() = Some(channel);
+    /// Configure an async task to be used for synchronizing device lock status.
+    pub fn install_lock_state_task(&self, task: Arc<AsyncTask>) {
+        info!("Setting lock state task");
+        *self.lock_state_task.write().unwrap() = Some(task);
     }
 
     /// Check if the device is locked for the given user. If there's no entry yet for the user,
     /// we assume that the device is locked
     fn is_device_locked(&self, user: AndroidUserId) -> bool {
-        if let Some(channel) = &*self.lock_state_channel.read().unwrap() {
-            // The presence of a channel indicates that there is a separate thread handling lock
-            // status notifications from a queue. Before reporting the lock state, we want to ensure
-            // that any currently-pending notifications in the queue are processed.
-            if !channel.is_empty() {
-                // There are pending notifications, so add a marker to the queue...
-                let _wp = wd::watch("Enforcements::is_device_locked sync with non-empty queue");
-                let pair = Arc::new((Mutex::new(false), Condvar::new()));
-                let op = LockStateNotification { user, state: LockState::Sync(pair.clone()) };
-                info!("add {op:?} to notification queue");
-                let result = channel.send(op);
+        if let Some(task) = &*self.lock_state_task.read().unwrap() {
+            // The presence of an `AsyncTask` indicates that lock status notifications are being
+            // handled via a queue. Before reporting the lock state, we want to ensure that any
+            // currently-pending notifications in the queue are processed.
+            let _wp = wd::watch("Enforcements::is_device_locked sync with task");
+            let pair = Arc::new((Mutex::new(false), Condvar::new()));
+            let notify_pair = pair.clone();
 
-                if let Err(e) = result {
-                    error!("Failed to sync with lock state queue: {e:?}");
-                } else {
-                    // ... and block until the marker is reached, to ensure that lock status is
-                    // up-to-date before returning an answer.
-                    let (lock, cv) = &*pair;
-                    let reached = lock.lock().unwrap();
-                    let _guard = cv.wait_while(reached, |reached| !*reached).unwrap();
-                }
+            let queued = task.queue_hi_if_running(move |_shelf| {
+                let (lock, cv) = &*notify_pair;
+                let mut reached = lock.lock().unwrap();
+                *reached = true;
+                // We notify the condvar that this point in the queue has been reached.
+                cv.notify_one();
+            });
+            if queued {
+                let _wp = wd::watch("Enforcements::is_device_locked sync with non-empty queue");
+                info!("added sync closure to notification queue");
+                // Block until the marker in the queue is reached, to ensure that lock status is
+                // up-to-date before returning an answer.
+                let (lock, cv) = &*pair;
+                let reached = lock.lock().unwrap();
+                let _guard = cv.wait_while(reached, |reached| !*reached).unwrap();
+                info!("sync closure in notification queue completed");
             }
         }
 

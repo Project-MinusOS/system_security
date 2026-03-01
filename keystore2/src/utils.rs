@@ -819,6 +819,65 @@ pub fn app_info_for_uid(uid: AppUid) -> AppInfo {
     app_info
 }
 
+/// Clear the current thread's `errno` value.
+fn errno_clear() {
+    // SAFETY: Writes to the thread's errno address should never fail
+    unsafe { *libc::__errno() = 0 }
+}
+
+/// Return the current thread's `errno` value.
+fn errno_read() -> libc::c_int {
+    // SAFETY: Reads from the thread's errno address should never fail
+    unsafe { *libc::__errno() }
+}
+
+/// A safe wrapper around [`libc::getpriority()`] for the current thread.
+///
+/// See: `man getpriority`
+fn getpriority() -> Option<libc::c_int> {
+    errno_clear();
+
+    // SAFETY: `errno` is cleared before calling the function and checked upon return.
+    let result = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+
+    let errno = errno_read();
+    if errno == 0 {
+        Some(result)
+    } else {
+        warn!("getpriority() failed (errno={errno})");
+        None
+    }
+}
+
+/// A best-effort safe wrapper around [`libc::setpriority()`] for the current thread.
+/// Failures are logged but not returned.
+///
+/// See: `man setpriority`
+fn setpriority(prio: libc::c_int) {
+    errno_clear();
+
+    // SAFETY: `setpriority` doesn't take pointers; `errno` is cleared before calling and checked
+    // upon return.
+    let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, prio) };
+    if result != 0 {
+        let errno = errno_read();
+        warn!("setpriority() failed (errno={errno})");
+    }
+}
+
+/// Set the priority of the current thread, but only if the thread's current priority
+/// is worse (has a higher numeric value, which means it is nicer to other threads).
+///
+/// This is best-effort and non-atomic; it does not attempt to cope with other threads
+/// changing the current thread's priority in between get and set.
+pub fn self_renice(niceness: i32) {
+    let Some(current) = getpriority() else { return };
+    if current > niceness {
+        info!("setting niceness {niceness} from current {current}");
+        setpriority(niceness)
+    }
+}
+
 /// Enable logging in unit tests.
 #[cfg(test)]
 pub fn init_test_logging() {
