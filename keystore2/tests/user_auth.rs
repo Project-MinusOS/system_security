@@ -1113,6 +1113,13 @@ fn test_unlocked_device_required_with(create_while_locked: bool) {
         expect!(result.is_ok(), "createOperation failed: {result:?}");
         abort_op(result);
 
+        // Try one more time after a delay long enough for the async task to shut down.
+        sleep(Duration::from_secs(6));
+        let result = sec_level.createOperation(&key, &params, UNFORCED);
+        info!("C: use unlocked-device-required key while lskf-unlocked #3 => {result:?}");
+        expect!(result.is_ok(), "createOperation failed: {result:?}");
+        abort_op(result);
+
         writer.send(&BarrierReached {}); // C done.
 
         // Action D: try to use the unlocked-device-required key while unlocked with a weak

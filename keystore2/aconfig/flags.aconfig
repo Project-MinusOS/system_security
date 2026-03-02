@@ -89,3 +89,14 @@ flag {
   }
   is_fixed_read_only: true
 }
+
+flag {
+  name: "renice_async_task"
+  namespace: "hardware_backed_security"
+  description: "Ensure async tasks have niceness 0 or better"
+  bug: "462372417"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+  is_fixed_read_only: true
+}
