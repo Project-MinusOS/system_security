@@ -444,8 +444,10 @@ pub fn perform_sample_sym_key_encrypt_op(
     let op_response = sec_level.createOperation(key, &op_params, false)?;
     assert!(op_response.iOperation.is_some());
     let op = op_response.iOperation.unwrap();
-    if op_response.parameters.is_some() && nonce.is_none() {
-        *nonce = get_op_nonce(&op_response.parameters.unwrap());
+    if nonce.is_none() {
+        if let Some(p) = op_response.parameters {
+            *nonce = get_op_nonce(&p);
+        }
     }
     op.finish(Some(SAMPLE_PLAIN_TEXT), None)
 }

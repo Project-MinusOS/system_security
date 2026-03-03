@@ -41,12 +41,12 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     OperationChallenge::OperationChallenge,
 };
 use anyhow::{Context, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
         mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc, Condvar, Mutex, RwLock, Weak,
+        Arc, Mutex, RwLock, Weak,
     },
     time::SystemTime,
 };
@@ -692,24 +692,20 @@ impl Enforcements {
             // handled via a queue. Before reporting the lock state, we want to ensure that any
             // currently-pending notifications in the queue are processed.
             let _wp = wd::watch("Enforcements::is_device_locked sync with task");
-            let pair = Arc::new((Mutex::new(false), Condvar::new()));
-            let notify_pair = pair.clone();
+            let (send, rcv) = channel::<()>();
 
             let queued = task.queue_hi_if_running(move |_shelf| {
-                let (lock, cv) = &*notify_pair;
-                let mut reached = lock.lock().unwrap();
-                *reached = true;
-                // We notify the condvar that this point in the queue has been reached.
-                cv.notify_one();
+                // We notify the channel that this point in the queue has been reached.
+                if let Err(e) = send.send(()) {
+                    warn!("failed to send queue sync notification: {e:?}");
+                }
             });
             if queued {
                 let _wp = wd::watch("Enforcements::is_device_locked sync with non-empty queue");
                 info!("added sync closure to notification queue");
                 // Block until the marker in the queue is reached, to ensure that lock status is
                 // up-to-date before returning an answer.
-                let (lock, cv) = &*pair;
-                let reached = lock.lock().unwrap();
-                let _guard = cv.wait_while(reached, |reached| !*reached).unwrap();
+                let _result = rcv.recv();
                 info!("sync closure in notification queue completed");
             }
         }
