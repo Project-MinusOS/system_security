@@ -40,6 +40,10 @@ rust_defaults {
 rust_library {
     name: "libkeystore_attestation",
     defaults: ["libkeystore_attestation_defaults"],
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.sdv.*",
+    ],
     vendor_available: true,
     min_sdk_version: "35",
 }
