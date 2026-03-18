@@ -25,10 +25,12 @@ use crate::error::{
 use crate::globals::{
     get_remotely_provisioned_component_name, DB, ENFORCEMENTS, LEGACY_IMPORTER, SUPER_KEY,
 };
-use crate::key_parameter::KeyParameter as KsKeyParam;
 use crate::key_parameter::KeyParameterValue as KsKeyParamValue;
+use crate::key_parameter::{KeyParameter as KsKeyParam, KmKeyParameter};
 use crate::ks_err;
-use crate::metrics_store::{log_key_creation_event_stats, log_operation_latency};
+use crate::metrics_store::{
+    log_key_creation_event_stats, log_operation_latency, parse_key_parameters,
+};
 use crate::remote_provisioning::RemProvState;
 use crate::security_level_manager;
 use crate::super_key::{KeyBlob, SuperKeyManager};
@@ -385,13 +387,27 @@ impl KeystoreSecurityLevel {
 
         let op_params: Vec<KeyParameter> = operation_parameters.to_vec();
 
+        let (algorithm, _, _) = if let Some((_, ref props)) = key_properties {
+            let km_props: Vec<KmKeyParameter> =
+                props.iter().map(|kp| kp.clone().into_key_parameter()).collect();
+            parse_key_parameters(&km_props)
+        } else {
+            parse_key_parameters(operation_parameters)
+        };
+
         let operation = match begin_result.operation {
             Some(km_op) => self.operation_db.create_operation(
                 km_op,
                 caller_uid,
                 auth_info,
                 forced,
-                LoggingInfo::new(self.security_level, purpose, op_params, upgraded_blob.is_some()),
+                LoggingInfo::new(
+                    self.security_level,
+                    purpose,
+                    algorithm,
+                    op_params,
+                    upgraded_blob.is_some(),
+                ),
             ),
             None => {
                 return Err(Error::sys()).context(ks_err!(

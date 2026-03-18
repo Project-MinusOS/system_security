@@ -554,3 +554,67 @@ fn test_log_operation_latency_mldsa() {
     });
     assert!(found, "ML_DSA_65 algorithm variant not reported correctly");
 }
+
+#[test]
+fn test_round_streaming_logic() {
+    let test_cases = [
+        (0, 0),
+        (5, 5),
+        (10, 10),
+        (11, 11),
+        (19, 19),
+        (20, 20),
+        (21, 20), // > 20: step is 10
+        (25, 30),
+        (94, 90),
+        (100, 100),
+        (101, 100), // > 100: step is 100
+        (104, 100),
+        (105, 100),
+        (124, 100),
+        (150, 200),
+        (949, 900),
+        (1000, 1000),
+        (1024, 1000), // > 1000: step is 1000
+        (10239, 10000),
+        (100000, 100000),
+    ];
+
+    for (input, expected) in test_cases {
+        assert_eq!(
+            round_logarithmic(input as u64, 10, 1, 20),
+            expected as i64,
+            "Failed rounding for {input}",
+        );
+    }
+}
+
+#[test]
+fn test_log_key_operation_streaming_stats() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
+    let algorithm = MetricsAlgorithm::RSA;
+    let is_success = true;
+
+    // Log once with call count below threshold (5 < 20)
+    log_key_operation_streaming_stats(algorithm, is_success, 5, 1024);
+    let atoms = METRICS_STORE.get_atoms(AtomID::KEY_OPERATION_STREAMING_STATS).unwrap();
+    let find_atom = |a: &KeystoreAtom| {
+        if let KeystoreAtomPayload::KeyOperationStreamingStats(ref payload) = a.payload {
+            payload.call_count == 5 && payload.total_input_bytes == 1000
+        } else {
+            false
+        }
+    };
+    let atom = atoms.iter().find(|a| find_atom(a)).expect("Atom should be present");
+    let initial_count = atom.count;
+    assert!(initial_count >= 1);
+
+    // Log again and check count increases
+    log_key_operation_streaming_stats(algorithm, is_success, 5, 1024);
+    let atoms = METRICS_STORE.get_atoms(AtomID::KEY_OPERATION_STREAMING_STATS).unwrap();
+    let atom = atoms.iter().find(|a| find_atom(a)).expect("Atom should be present");
+    assert_eq!(atom.count, initial_count + 1);
+}

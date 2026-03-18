@@ -131,7 +131,9 @@ use crate::error::{
     error_to_serialized_error, into_binder, into_logged_binder, map_km_error, Error, ErrorCode,
     ResponseCode, SerializedError,
 };
-use crate::metrics_store::{log_key_operation_event_stats, log_operation_latency};
+use crate::metrics_store::{
+    log_key_operation_event_stats, log_key_operation_streaming_stats, log_operation_latency,
+};
 use crate::utils::{watchdog as wd, AppUid};
 use crate::{ks_err, log_client_err};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
@@ -139,7 +141,9 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     SecurityLevel::SecurityLevel,
 };
 use android_hardware_security_keymint::binder::{BinderFeatures, Strong};
-use android_security_metrics::aidl::android::security::metrics::OperationType::OperationType;
+use android_security_metrics::aidl::android::security::metrics::{
+    Algorithm::Algorithm as MetricsAlgorithm, OperationType::OperationType,
+};
 use android_system_keystore2::aidl::android::system::keystore2::{
     IKeystoreOperation::BnKeystoreOperation, IKeystoreOperation::IKeystoreOperation,
 };
@@ -189,7 +193,8 @@ pub struct Operation {
 #[derive(Debug, Default, Clone, Copy)]
 struct OperationMetrics {
     total_duration: Duration,
-    call_count: usize,
+    call_count: i32,
+    total_input_bytes: u64,
 }
 
 /// Keeps track of the information required for logging operations.
@@ -197,6 +202,7 @@ struct OperationMetrics {
 pub struct LoggingInfo {
     sec_level: SecurityLevel,
     purpose: KeyPurpose,
+    algorithm: MetricsAlgorithm,
     op_params: Vec<KeyParameter>,
     key_upgraded: bool,
 }
@@ -206,10 +212,11 @@ impl LoggingInfo {
     pub fn new(
         sec_level: SecurityLevel,
         purpose: KeyPurpose,
+        algorithm: MetricsAlgorithm,
         op_params: Vec<KeyParameter>,
         key_upgraded: bool,
     ) -> LoggingInfo {
-        Self { sec_level, purpose, op_params, key_upgraded }
+        Self { sec_level, purpose, algorithm, op_params, key_upgraded }
     }
 }
 
@@ -467,14 +474,15 @@ impl Operation {
     }
 
     /// Update operation processing metrics (update/finish), with latency.
-    fn update_metrics(&self, latency: Duration) {
+    fn update_metrics(&self, latency: Duration, input_bytes: usize) {
         let mut metrics = self.operation_metrics.lock().unwrap();
         metrics.total_duration += latency;
         metrics.call_count += 1;
+        metrics.total_input_bytes = metrics.total_input_bytes.saturating_add(input_bytes as u64);
     }
 
     /// Log latency for the cumulative operation data processing.
-    fn log_latency(&self, is_success: bool) {
+    fn log_metrics(&self, is_success: bool) {
         let metrics = self.operation_metrics.lock().unwrap();
         if metrics.call_count > 0 {
             log_operation_latency(
@@ -483,6 +491,12 @@ impl Operation {
                 &self.logging_info.op_params,
                 is_success,
                 metrics.total_duration,
+            );
+            log_key_operation_streaming_stats(
+                self.logging_info.algorithm,
+                is_success,
+                metrics.call_count,
+                metrics.total_input_bytes,
             );
         }
     }
@@ -499,7 +513,7 @@ impl Drop for Operation {
             &guard,
             self.logging_info.key_upgraded,
         );
-        self.log_latency(matches!(*guard, Outcome::Success));
+        self.log_metrics(matches!(*guard, Outcome::Success));
 
         if let Outcome::Unknown = *guard {
             drop(guard);
@@ -820,7 +834,7 @@ impl KeystoreOperation {
     /// Grabs the outer operation mutex and calls `f` on the locked operation.
     /// The function also deletes the operation if it returns with an error or if
     /// `delete_op` is true.
-    fn with_locked_operation<T, F>(&self, f: F, delete_op: bool) -> Result<T>
+    fn with_locked_operation<T, F>(&self, f: F, delete_op: bool, input_len: usize) -> Result<T>
     where
         for<'a> F: FnOnce(&'a Operation) -> Result<T>,
     {
@@ -830,7 +844,7 @@ impl KeystoreOperation {
                 let result = match &*mutex_guard {
                     Some(op) => {
                         let (latency, result) = crate::timed_call!(f(op));
-                        op.update_metrics(latency);
+                        op.update_metrics(latency, input_len);
                         // Any error here means we can discard the operation.
                         if result.is_err() {
                             delete_op = true;
@@ -864,6 +878,7 @@ impl IKeystoreOperation for KeystoreOperation {
         self.with_locked_operation(
             |op| op.update_aad(aad_input).context(ks_err!("KeystoreOperation::updateAad")),
             false,
+            aad_input.len(),
         )
         .map_err(into_logged_binder)
     }
@@ -873,6 +888,7 @@ impl IKeystoreOperation for KeystoreOperation {
         self.with_locked_operation(
             |op| op.update(input).context(ks_err!("KeystoreOperation::update")),
             false,
+            input.len(),
         )
         .map_err(into_logged_binder)
     }
@@ -885,6 +901,7 @@ impl IKeystoreOperation for KeystoreOperation {
         self.with_locked_operation(
             |op| op.finish(input, signature).context(ks_err!("KeystoreOperation::finish")),
             true,
+            input.map_or(0, |v| v.len()),
         )
         .map_err(into_logged_binder)
     }
@@ -894,6 +911,7 @@ impl IKeystoreOperation for KeystoreOperation {
         let result = self.with_locked_operation(
             |op| op.abort(Outcome::Abort).context(ks_err!("KeystoreOperation::abort")),
             true,
+            0,
         );
         result.map_err(|e| {
             match e.root_cause().downcast_ref::<Error>() {
