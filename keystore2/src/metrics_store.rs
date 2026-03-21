@@ -33,9 +33,10 @@ use android_security_metrics::aidl::android::security::metrics::{
     Algorithm::Algorithm as MetricsAlgorithm, AtomID::AtomID, CrashStats::CrashStats,
     EcCurve::EcCurve as MetricsEcCurve,
     HardwareAuthenticatorType::HardwareAuthenticatorType as MetricsHardwareAuthenticatorType,
-    KeyCreationWithAuthInfo::KeyCreationWithAuthInfo,
+    KeyCreationPerUid::KeyCreationPerUid, KeyCreationWithAuthInfo::KeyCreationWithAuthInfo,
     KeyCreationWithGeneralInfo::KeyCreationWithGeneralInfo,
     KeyCreationWithPurposeAndModesInfo::KeyCreationWithPurposeAndModesInfo,
+    KeyOperationPerUid::KeyOperationPerUid,
     KeyOperationWithGeneralInfo::KeyOperationWithGeneralInfo,
     KeyOperationWithPurposeAndModesInfo::KeyOperationWithPurposeAndModesInfo,
     KeyOrigin::KeyOrigin as MetricsKeyOrigin, KeysPerUid::KeysPerUid,
@@ -145,6 +146,8 @@ impl MetricsStore {
             | AtomID::KEYSTORE2_ATOM_WITH_OVERFLOW
             | AtomID::KEY_OPERATION_WITH_PURPOSE_AND_MODES_INFO
             | AtomID::KEY_OPERATION_WITH_GENERAL_INFO
+            | AtomID::KEY_CREATION_PER_UID
+            | AtomID::KEY_OPERATION_PER_UID
             | AtomID::RKP_ERROR_STATS => {
                 let metrics_store_guard = self.metrics_store.lock().unwrap();
                 metrics_store_guard.get(&atom_id).map_or(
@@ -192,6 +195,7 @@ impl MetricsStore {
 
 /// Log key creation events to be sent to statsd.
 pub fn log_key_creation_event_stats<U>(
+    uid: i32,
     sec_level: SecurityLevel,
     key_params: &[KeyParameter],
     origin: KeyOrigin,
@@ -201,7 +205,8 @@ pub fn log_key_creation_event_stats<U>(
         key_creation_with_general_info,
         key_creation_with_auth_info,
         key_creation_with_purpose_and_modes_info,
-    ) = process_key_creation_event_stats(sec_level, key_params, origin, result);
+        key_creation_per_uid,
+    ) = process_key_creation_event_stats(uid, sec_level, key_params, origin, result);
 
     METRICS_STORE
         .insert_atom(AtomID::KEY_CREATION_WITH_GENERAL_INFO, key_creation_with_general_info);
@@ -210,17 +215,21 @@ pub fn log_key_creation_event_stats<U>(
         AtomID::KEY_CREATION_WITH_PURPOSE_AND_MODES_INFO,
         key_creation_with_purpose_and_modes_info,
     );
+    if keystore2_flags::atoms_v2() {
+        METRICS_STORE.insert_atom(AtomID::KEY_CREATION_PER_UID, key_creation_per_uid);
+    }
 }
 
-// Process the statistics related to key creations and return the three atom objects related to key
+// Process the statistics related to key creations and return the four atom objects related to key
 // creations: i) KeyCreationWithGeneralInfo ii) KeyCreationWithAuthInfo
-// iii) KeyCreationWithPurposeAndModesInfo
+// iii) KeyCreationWithPurposeAndModesInfo iv) KeyCreationPerUid
 fn process_key_creation_event_stats<U>(
+    uid: i32,
     sec_level: SecurityLevel,
     key_params: &[KeyParameter],
     origin: KeyOrigin,
     result: &Result<U>,
-) -> (KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload) {
+) -> (KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload) {
     // In the default atom objects, fields represented by bitmaps and i32 fields
     // will take 0, except error_code which defaults to 1 indicating NO_ERROR and key_size,
     // and auth_time_out which defaults to -1.
@@ -365,52 +374,74 @@ fn process_key_creation_event_stats<U>(
         key_creation_with_general_info.key_size = -1;
     }
 
+    let key_creation_per_uid = KeyCreationPerUid {
+        uid,
+        security_level: key_creation_with_auth_info.security_level,
+        algorithm,
+        user_auth_type: key_creation_with_auth_info.user_auth_type,
+        attestation_requested: key_creation_with_general_info.attestation_requested,
+    };
+
     (
         KeystoreAtomPayload::KeyCreationWithGeneralInfo(key_creation_with_general_info),
         KeystoreAtomPayload::KeyCreationWithAuthInfo(key_creation_with_auth_info),
         KeystoreAtomPayload::KeyCreationWithPurposeAndModesInfo(
             key_creation_with_purpose_and_modes_info,
         ),
+        KeystoreAtomPayload::KeyCreationPerUid(key_creation_per_uid),
     )
 }
 
 /// Log key operation events to be sent to statsd.
 pub fn log_key_operation_event_stats(
+    uid: i32,
     sec_level: SecurityLevel,
     key_purpose: KeyPurpose,
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
 ) {
-    let (key_operation_with_general_info, key_operation_with_purpose_and_modes_info) =
-        process_key_operation_event_stats(
-            sec_level,
-            key_purpose,
-            op_params,
-            op_outcome,
-            key_upgraded,
-        );
+    let (
+        key_operation_with_general_info,
+        key_operation_with_purpose_and_modes_info,
+        key_operation_per_uid,
+    ) = process_key_operation_event_stats(
+        uid,
+        sec_level,
+        key_purpose,
+        op_params,
+        op_outcome,
+        key_upgraded,
+    );
     METRICS_STORE
         .insert_atom(AtomID::KEY_OPERATION_WITH_GENERAL_INFO, key_operation_with_general_info);
     METRICS_STORE.insert_atom(
         AtomID::KEY_OPERATION_WITH_PURPOSE_AND_MODES_INFO,
         key_operation_with_purpose_and_modes_info,
     );
+    if keystore2_flags::atoms_v2() {
+        METRICS_STORE.insert_atom(AtomID::KEY_OPERATION_PER_UID, key_operation_per_uid);
+    }
 }
 
-// Process the statistics related to key operations and return the two atom objects related to key
+// Process the statistics related to key operations and return the three atom objects related to key
 // operations: i) KeyOperationWithGeneralInfo ii) KeyOperationWithPurposeAndModesInfo
+// iii) KeyOperationPerUid
 fn process_key_operation_event_stats(
+    uid: i32,
     sec_level: SecurityLevel,
     key_purpose: KeyPurpose,
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
-) -> (KeystoreAtomPayload, KeystoreAtomPayload) {
+) -> (KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload) {
+    let security_level = process_security_level(sec_level);
+    let key_operation_per_uid = KeyOperationPerUid { uid, security_level };
+
     let mut key_operation_with_general_info = KeyOperationWithGeneralInfo {
         outcome: MetricsOutcome::OUTCOME_UNSPECIFIED,
         error_code: 1,
-        security_level: MetricsSecurityLevel::SECURITY_LEVEL_UNSPECIFIED,
+        security_level,
         // Default for bool is false (for key_upgraded field).
         ..Default::default()
     };
@@ -420,8 +451,6 @@ fn process_key_operation_event_stats(
         // Default for i32 is 0 (for the remaining bitmap fields).
         ..Default::default()
     };
-
-    key_operation_with_general_info.security_level = process_security_level(sec_level);
 
     key_operation_with_general_info.key_upgraded = key_upgraded;
 
@@ -476,6 +505,7 @@ fn process_key_operation_event_stats(
         KeystoreAtomPayload::KeyOperationWithPurposeAndModesInfo(
             key_operation_with_purpose_and_modes_info,
         ),
+        KeystoreAtomPayload::KeyOperationPerUid(key_operation_per_uid),
     )
 }
 
@@ -808,6 +838,8 @@ impl_summary_enum!(AtomID, 14,
     KEY_CREATION_WITH_PURPOSE_AND_MODES_INFO => "KEYGEN_MODES",
     KEY_OPERATION_WITH_PURPOSE_AND_MODES_INFO => "KEYOP_MODES",
     KEY_OPERATION_WITH_GENERAL_INFO => "KEYOP_GENERAL",
+    KEY_CREATION_PER_UID => "KEYGEN_UID",
+    KEY_OPERATION_PER_UID => "KEYOP_UID",
     RKP_ERROR_STATS => "RKP_ERR",
     CRASH_STATS => "CRASH",
     KEYS_PER_UID => "KEYS_PER_UID",
@@ -1051,6 +1083,19 @@ impl Summary for KeystoreAtomPayload {
             }
             KeystoreAtomPayload::KeysPerUid(v) => {
                 format!("uid={} key_count={}", v.uid, v.key_count)
+            }
+            KeystoreAtomPayload::KeyCreationPerUid(v) => {
+                format!(
+                    "uid={} sec={} alg={} auth={} attest? {}",
+                    v.uid,
+                    v.security_level.show(),
+                    v.algorithm.show(),
+                    v.user_auth_type.show(),
+                    if v.attestation_requested { "Y" } else { "N" }
+                )
+            }
+            KeystoreAtomPayload::KeyOperationPerUid(v) => {
+                format!("uid={} sec={}", v.uid, v.security_level.show())
             }
         }
     }

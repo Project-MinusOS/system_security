@@ -477,7 +477,7 @@ impl KeystoreSecurityLevel {
                         .context(ks_err!("Attestation ID retrieval failed."));
                 }
                 Err(e) => {
-                    return Err(anyhow!(e)).context(ks_err!("Attestation ID retrieval error."))
+                    return Err(anyhow!(e)).context(ks_err!("Attestation ID retrieval error."));
                 }
             }
         }
@@ -1183,7 +1183,13 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         let _wp = self.watch_millis("IKeystoreSecurityLevel::generateKey", 5000);
         security_level_manager::notify_operation_performed(self.security_level);
         let result = self.generate_key(key, attestation_key, params, flags, entropy);
-        log_key_creation_event_stats(self.security_level, params, KeyOrigin::GENERATED, &result);
+        log_key_creation_event_stats(
+            AppUid::calling().0 as i32,
+            self.security_level,
+            params,
+            KeyOrigin::GENERATED,
+            &result,
+        );
         log_key_generated(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
@@ -1198,7 +1204,13 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         let _wp = self.watch("IKeystoreSecurityLevel::importKey");
         security_level_manager::notify_operation_performed(self.security_level);
         let result = self.import_key(key, attestation_key, params, flags, key_data);
-        log_key_creation_event_stats(self.security_level, params, KeyOrigin::IMPORTED, &result);
+        log_key_creation_event_stats(
+            AppUid::calling().0 as i32,
+            self.security_level,
+            params,
+            KeyOrigin::IMPORTED,
+            &result,
+        );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
@@ -1215,6 +1227,7 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         let result =
             self.import_wrapped_key(key, wrapping_key, masking_key, params, authenticators);
         log_key_creation_event_stats(
+            AppUid::calling().0 as i32,
             self.security_level,
             params,
             KeyOrigin::SECURELY_IMPORTED,

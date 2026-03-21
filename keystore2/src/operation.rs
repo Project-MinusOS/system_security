@@ -463,6 +463,7 @@ impl Drop for Operation {
     fn drop(&mut self) {
         let guard = self.outcome.lock().expect("In drop.");
         log_key_operation_event_stats(
+            self.owner.0 as i32,
             self.logging_info.sec_level,
             self.logging_info.purpose,
             &(self.logging_info.op_params),
