@@ -26,8 +26,8 @@ use crate::utils::watchdog as wd;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, BlockMode::BlockMode, Digest::Digest, EcCurve::EcCurve,
     HardwareAuthenticatorType::HardwareAuthenticatorType, KeyOrigin::KeyOrigin,
-    KeyParameter::KeyParameter, KeyPurpose::KeyPurpose, PaddingMode::PaddingMode,
-    SecurityLevel::SecurityLevel,
+    KeyParameter::KeyParameter, KeyPurpose::KeyPurpose, MlDsaVariant::MlDsaVariant,
+    PaddingMode::PaddingMode, SecurityLevel::SecurityLevel,
 };
 use android_security_metrics::aidl::android::security::metrics::{
     Algorithm::Algorithm as MetricsAlgorithm, AtomID::AtomID, CrashStats::CrashStats,
@@ -263,20 +263,31 @@ fn process_key_creation_event_stats<U>(
 
     key_creation_with_auth_info.security_level = process_security_level(sec_level);
 
+    let mut algorithm = MetricsAlgorithm::ALGORITHM_UNSPECIFIED;
+
     for key_param in key_params.iter().map(KsKeyParamValue::from) {
         match key_param {
             KsKeyParamValue::Algorithm(a) => {
-                let algorithm = match a {
+                algorithm = match a {
                     Algorithm::RSA => MetricsAlgorithm::RSA,
                     Algorithm::EC => MetricsAlgorithm::EC,
-                    Algorithm::ML_DSA => MetricsAlgorithm::ML_DSA,
                     Algorithm::AES => MetricsAlgorithm::AES,
                     Algorithm::TRIPLE_DES => MetricsAlgorithm::TRIPLE_DES,
                     Algorithm::HMAC => MetricsAlgorithm::HMAC,
+                    // Don't touch the algorithm for ML-DSA since
+                    // MetricsAlgorithm has an enum value for each ML-DSA
+                    // variant, which is determined from
+                    // KsKeyParameterValue::MlDsaVariant.
+                    Algorithm::ML_DSA => algorithm,
                     _ => MetricsAlgorithm::ALGORITHM_UNSPECIFIED,
                 };
-                key_creation_with_general_info.algorithm = algorithm;
-                key_creation_with_purpose_and_modes_info.algorithm = algorithm;
+            }
+            KsKeyParamValue::MlDsaVariant(v) => {
+                algorithm = match v {
+                    MlDsaVariant::ML_DSA_65 => MetricsAlgorithm::ML_DSA_65,
+                    MlDsaVariant::ML_DSA_87 => MetricsAlgorithm::ML_DSA_87,
+                    _ => MetricsAlgorithm::ALGORITHM_UNSPECIFIED,
+                };
             }
             KsKeyParamValue::KeySize(s) => {
                 key_creation_with_general_info.key_size = s;
@@ -345,6 +356,10 @@ fn process_key_creation_event_stats<U>(
             _ => {}
         }
     }
+
+    key_creation_with_general_info.algorithm = algorithm;
+    key_creation_with_purpose_and_modes_info.algorithm = algorithm;
+
     if key_creation_with_general_info.algorithm == MetricsAlgorithm::EC {
         // Do not record key sizes if Algorithm = EC, in order to reduce cardinality.
         key_creation_with_general_info.key_size = -1;
@@ -818,11 +833,12 @@ impl_summary_enum!(MetricsStorage, 28,
     LEGACY_STORAGE => "LEGACY_STORAGE",
 );
 
-impl_summary_enum!(MetricsAlgorithm, 4,
+impl_summary_enum!(MetricsAlgorithm, 7,
     ALGORITHM_UNSPECIFIED => "NONE",
     RSA => "RSA",
     EC => "EC",
-    ML_DSA => "ML-DSA",
+    ML_DSA_65 => "MLDSA65",
+    ML_DSA_87 => "MLDSA87",
     AES => "AES",
     TRIPLE_DES => "DES",
     HMAC => "HMAC",

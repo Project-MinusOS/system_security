@@ -48,7 +48,6 @@ rust_defaults {
         "libanyhow",
         "libbinder_rs",
         "libbssl_crypto",
-        "libcrossbeam_channel",
         "libder",
         "libhex",
         "libkeystore2_aaid-rust",

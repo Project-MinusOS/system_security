@@ -36,12 +36,27 @@ use tokio::{io::AsyncWriteExt, net::UnixListener as TokioUnixListener};
 
 use crate::conditioner::ConditionerBuilder;
 
+// Minimum interval in milliseconds to wait between retries of opening the hwrng source.
+const MIN_RETRY_INTERVAL_MS: u64 = 10;
+
 #[derive(Debug, Parser)]
 struct Cli {
     #[clap(long, default_value = "/dev/hw_random")]
     source: PathBuf,
     #[clap(long)]
     socket: Option<PathBuf>,
+    /// Timeout in milliseconds to wait for the hwrng source to become available.
+    ///
+    /// Set to 0 to fail immediately if the source is unavailable (try once).
+    /// Set to a very large value (e.g. 1 year in ms) to effectively wait indefinitely.
+    #[clap(long, default_value = "0")]
+    timeout_ms: u64,
+    /// Interval in milliseconds to wait between retries.
+    ///
+    /// If set to a value lower than the minimum (10ms), it will be clamped to the minimum to
+    /// prevent busy loops that are causing high CPU usage.
+    #[clap(long, default_value = "1000")]
+    retry_interval_ms: u64,
 }
 
 fn configure_logging() -> Result<()> {
@@ -68,9 +83,53 @@ fn get_socket(path: &Path) -> Result<UnixListener> {
         .with_context(|| format!("In get_socket: binding socket to {}", path.display()))
 }
 
+// Retry for a limited time based on the CLI argument
+// If it fails after the timeout, we propagate the error so run() can park the thread.
+fn wait_for_hwrng(
+    source: &Path,
+    timeout: std::time::Duration,
+    retry_interval: std::time::Duration,
+) -> Result<ConditionerBuilder> {
+    let start_time = std::time::Instant::now();
+
+    loop {
+        match std::fs::File::open(source) {
+            Ok(hwrng) => {
+                // File opened, try to initialize conditioner
+                match ConditionerBuilder::new(hwrng) {
+                    Ok(cb) => return Ok(cb),
+                    Err(e) => {
+                        if start_time.elapsed() > timeout {
+                            return Err(e).context("Timed out initializing conditioner");
+                        }
+                        info!("Conditioner init failed: {e}. Retrying...");
+                    }
+                }
+            }
+            Err(e) => {
+                if start_time.elapsed() > timeout {
+                    return Err(e).context(format!("Timed out opening hwrng {}", source.display()));
+                }
+                info!("Unable to open hwrng {}: {e}. Retrying...", source.display());
+            }
+        }
+        std::thread::sleep(retry_interval);
+    }
+}
+
 fn setup() -> Result<(ConditionerBuilder, UnixListener)> {
     configure_logging()?;
     let cli = Cli::try_parse()?;
+    // Enforce minimum retry interval to prevent busy loops
+    let retry_interval_ms = if cli.retry_interval_ms < MIN_RETRY_INTERVAL_MS {
+        info!(
+            "retry_interval_ms {} is too small, using minimum {}ms",
+            cli.retry_interval_ms, MIN_RETRY_INTERVAL_MS
+        );
+        MIN_RETRY_INTERVAL_MS
+    } else {
+        cli.retry_interval_ms
+    };
     // SAFETY: nobody has taken ownership of the inherited FDs yet.
     unsafe { rustutils::inherited_fd::init_once() }
         .context("In setup, failed to own inherited FDs")?;
@@ -84,10 +143,11 @@ fn setup() -> Result<(ConditionerBuilder, UnixListener)> {
             .context("In setup, calling android_get_control_socket")?
             .into(),
     };
-    let hwrng = std::fs::File::open(&cli.source)
-        .with_context(|| format!("Unable to open hwrng {}", cli.source.display()))?;
-    let cb = ConditionerBuilder::new(hwrng)?;
-    Ok((cb, listener))
+    let timeout = std::time::Duration::from_millis(cli.timeout_ms);
+    let retry_interval = std::time::Duration::from_millis(retry_interval_ms);
+    let conditioner_builder = wait_for_hwrng(&cli.source, timeout, retry_interval)?;
+
+    Ok((conditioner_builder, listener))
 }
 
 async fn listen_loop(cb: ConditionerBuilder, listener: UnixListener) -> Result<Infallible> {
@@ -146,9 +206,99 @@ fn main() {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use std::io::Write;
+    use std::time::Duration;
 
     #[test]
     fn verify_cli() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn test_wait_for_hwrng_success() {
+        // Create a temporary file to simulate /dev/hw_random
+        let file_path = PathBuf::from("temp_test_hwrng_success");
+        {
+            let mut file = std::fs::File::create(&file_path).unwrap();
+            // Write 192 bytes (RAW_ENTROPY_SAMPLE_LEN) so ConditionerBuilder::new succeeds
+            file.write_all(&[0u8; 192]).unwrap();
+        }
+
+        let result = wait_for_hwrng(&file_path, Duration::from_secs(1), Duration::from_millis(100));
+        let _ = std::fs::remove_file(&file_path);
+
+        assert!(result.is_ok(), "Should succeed when file exists and has data");
+    }
+
+    #[test]
+    fn test_wait_for_hwrng_timeout_missing_file() {
+        let file_path = PathBuf::from("temp_test_hwrng_missing");
+        // Ensure it doesn't exist
+        let _ = std::fs::remove_file(&file_path);
+
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_millis(1000);
+
+        let result = wait_for_hwrng(&file_path, timeout, Duration::from_millis(100));
+
+        assert!(result.is_err(), "Should fail when file is missing");
+        assert!(start.elapsed() >= timeout, "Should wait at least for the timeout duration");
+    }
+
+    #[test]
+    fn test_wait_for_hwrng_timeout_empty_file() {
+        // Create an empty file. ConditionerBuilder needs 192 bytes, so this will fail initialization.
+        let file_path = PathBuf::from("temp_test_hwrng_empty");
+        std::fs::File::create(&file_path).unwrap();
+
+        let result =
+            wait_for_hwrng(&file_path, Duration::from_millis(100), Duration::from_millis(10));
+
+        let _ = std::fs::remove_file(&file_path);
+
+        assert!(result.is_err(), "Should fail when file is empty (Conditioner init failure)");
+    }
+
+    #[test]
+    fn test_wait_for_hwrng_retry_success() {
+        let file_path = PathBuf::from("temp_test_hwrng_retry");
+        // Ensure it doesn't exist initially
+        let _ = std::fs::remove_file(&file_path);
+
+        // Spawn a thread to create the file after a delay
+        let file_path_clone = file_path.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1000));
+            let mut file =
+                std::fs::File::create(&file_path_clone).expect("Failed to create temp file");
+            // Write enough data for ConditionerBuilder (192 bytes)
+            file.write_all(&[0u8; 192]).expect("Failed to write to temp file");
+        });
+
+        // Wait with a timeout longer than the delay (5000ms > 1000ms)
+        let result =
+            wait_for_hwrng(&file_path, Duration::from_millis(5000), Duration::from_millis(100));
+
+        let _ = std::fs::remove_file(&file_path);
+
+        assert!(result.is_ok(), "Should succeed after retrying until file appears");
+    }
+
+    #[test]
+    fn test_wait_for_hwrng_zero_timeout() {
+        let file_path = PathBuf::from("temp_test_hwrng_zero_timeout");
+        // Ensure file does not exist initially
+        let _ = std::fs::remove_file(&file_path);
+
+        let start = std::time::Instant::now();
+
+        // Use a large retry interval (1s) to prove that if it fails, it returns immediately
+        // and doesn't sleep.
+        let result = wait_for_hwrng(&file_path, Duration::ZERO, Duration::from_secs(1));
+
+        assert!(result.is_err(), "Should fail immediately if file is missing and timeout is 0");
+
+        // If it slept, the elapsed time would be > 1s.
+        assert!(start.elapsed() < Duration::from_secs(1), "Should not sleep if timeout is 0");
     }
 }
