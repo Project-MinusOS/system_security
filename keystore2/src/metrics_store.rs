@@ -376,6 +376,7 @@ pub fn log_key_operation_event_stats(
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
+    is_attested: bool,
 ) {
     let (
         key_operation_with_general_info,
@@ -388,6 +389,7 @@ pub fn log_key_operation_event_stats(
         op_params,
         op_outcome,
         key_upgraded,
+        is_attested,
     );
     METRICS_STORE
         .insert_atom(AtomID::KEY_OPERATION_WITH_GENERAL_INFO, key_operation_with_general_info);
@@ -410,6 +412,7 @@ fn process_key_operation_event_stats(
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
+    is_attested: bool,
 ) -> (KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload) {
     let security_level = process_security_level(sec_level);
     let key_operation_per_uid = KeyOperationPerUid { uid, security_level };
@@ -418,6 +421,7 @@ fn process_key_operation_event_stats(
         outcome: MetricsOutcome::OUTCOME_UNSPECIFIED,
         error_code: 1,
         security_level,
+        is_attested,
         // Default for bool is false (for key_upgraded field).
         ..Default::default()
     };

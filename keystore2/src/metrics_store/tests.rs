@@ -387,14 +387,30 @@ fn test_log_key_operation_per_uid() {
     };
 
     // Log once
-    log_key_operation_event_stats(uid, sec_level, KeyPurpose::SIGN, &[], &Outcome::Success, false);
+    log_key_operation_event_stats(
+        uid,
+        sec_level,
+        KeyPurpose::SIGN,
+        &[],
+        &Outcome::Success,
+        false,
+        false,
+    );
     let atoms = METRICS_STORE.get_atoms(AtomID::KEY_OPERATION_PER_UID).unwrap();
     let atom = atoms.iter().find(|a| find_operation_atom(a)).expect("Atom should be present");
     let initial_count = atom.count;
     assert!(initial_count >= 1);
 
     // Log again and check count increases
-    log_key_operation_event_stats(uid, sec_level, KeyPurpose::SIGN, &[], &Outcome::Success, false);
+    log_key_operation_event_stats(
+        uid,
+        sec_level,
+        KeyPurpose::SIGN,
+        &[],
+        &Outcome::Success,
+        false,
+        false,
+    );
     let atoms = METRICS_STORE.get_atoms(AtomID::KEY_OPERATION_PER_UID).unwrap();
     let atom = atoms.iter().find(|a| find_operation_atom(a)).expect("Atom should be present");
     assert_eq!(atom.count, initial_count + 1);

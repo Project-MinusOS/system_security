@@ -247,6 +247,7 @@ impl KeystoreSecurityLevel {
         // so that we can use it by reference like the blob provided by the key descriptor.
         // Otherwise, we would have to clone the blob from the key descriptor.
         let scoping_blob: Vec<u8>;
+        let mut is_attested = false;
         let (km_blob, key_properties, key_id_guard, blob_metadata) = match key.domain {
             Domain::BLOB => {
                 check_key_permission(KeyPerm::Use, key, &None)
@@ -281,7 +282,7 @@ impl KeystoreSecurityLevel {
                             db.borrow_mut().load_key_entry(
                                 key,
                                 KeyType::Client,
-                                KeyEntryLoadBits::KM,
+                                KeyEntryLoadBits::BOTH,
                                 caller_uid,
                                 |k, av| {
                                     check_key_permission(KeyPerm::Use, k, &av)?;
@@ -294,6 +295,8 @@ impl KeystoreSecurityLevel {
                         })
                     })
                     .context(ks_err!("Failed to load key blob."))?;
+
+                is_attested = key_entry.is_attested();
 
                 let (blob, blob_metadata) =
                     key_entry.take_key_blob_info().ok_or_else(Error::sys).context(ks_err!(
@@ -407,6 +410,7 @@ impl KeystoreSecurityLevel {
                     algorithm,
                     op_params,
                     upgraded_blob.is_some(),
+                    is_attested,
                 ),
             ),
             None => {

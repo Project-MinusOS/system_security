@@ -205,6 +205,7 @@ pub struct LoggingInfo {
     algorithm: MetricsAlgorithm,
     op_params: Vec<KeyParameter>,
     key_upgraded: bool,
+    is_attested: bool,
 }
 
 impl LoggingInfo {
@@ -215,8 +216,9 @@ impl LoggingInfo {
         algorithm: MetricsAlgorithm,
         op_params: Vec<KeyParameter>,
         key_upgraded: bool,
+        is_attested: bool,
     ) -> LoggingInfo {
-        Self { sec_level, purpose, algorithm, op_params, key_upgraded }
+        Self { sec_level, purpose, algorithm, op_params, key_upgraded, is_attested }
     }
 }
 
@@ -512,6 +514,7 @@ impl Drop for Operation {
             &(self.logging_info.op_params),
             &guard,
             self.logging_info.key_upgraded,
+            self.logging_info.is_attested,
         );
         self.log_metrics(matches!(*guard, Outcome::Success));
 
