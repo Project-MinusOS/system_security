@@ -263,6 +263,10 @@ fn test_algorithm() {
 
 #[test]
 fn test_log_key_creation_per_uid() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
     let uid = 12345;
     let sec_level = SecurityLevel::TRUSTED_ENVIRONMENT;
     let params = vec![create_key_param_with_algorithm(Algorithm::RSA)];
@@ -294,6 +298,10 @@ fn test_log_key_creation_per_uid() {
 
 #[test]
 fn test_log_key_creation_per_uid_verify_fields() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
     let uid = 67890;
     let sec_level = SecurityLevel::STRONGBOX;
     let params = vec![
@@ -325,6 +333,10 @@ fn test_log_key_creation_per_uid_verify_fields() {
 
 #[test]
 fn test_log_key_operation_per_uid() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
     let uid = 54321;
     let sec_level = SecurityLevel::STRONGBOX;
 
