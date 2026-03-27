@@ -24,12 +24,13 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
 use android_hardware_security_keymint::binder::{self, Strong};
 use android_security_compat::aidl::android::security::compat::IKeystoreCompatService::IKeystoreCompatService;
 
-static COMPAT_NAME: &str = "android.security.compat";
+/// Name under which to register the test instance of the compat service.
+static TEST_COMPAT_NAME: &str = "android.security.compat.test";
 
 fn ensure_compat_service_started() {
     // Start the compatibility service locally in-process.
     println!("Starting local compatibility service");
-    keystore2_km_compat::add_keymint_device_service();
+    keystore2_km_compat::add_named_keymint_device_service(TEST_COMPAT_NAME);
 }
 
 macro_rules! get_device_or_skip_test {
@@ -37,17 +38,11 @@ macro_rules! get_device_or_skip_test {
         ensure_compat_service_started();
 
         let compat_service: Strong<dyn IKeystoreCompatService> =
-            match binder::get_interface(COMPAT_NAME) {
-                Ok(cs) => cs,
-                Err(e) => {
-                    eprintln!("Failed to get {COMPAT_NAME} service, skipping test: {e:?}");
-                    return;
-                }
-            };
+            binder::get_interface(TEST_COMPAT_NAME).expect("Failed to get compat service");
         match compat_service.getKeyMintDevice(SecurityLevel::TRUSTED_ENVIRONMENT) {
             Ok(dev) => dev,
             Err(e) => {
-                println!("Failed to get Keymaster device, skipping test: {e:?}");
+                println!("Failed to get wrapped TEE Keymaster device, skipping test: {e:?}");
                 return;
             }
         }
@@ -312,13 +307,7 @@ fn test_begin_update_finish() {
 fn test_secure_clock() {
     ensure_compat_service_started();
     let compat_service: binder::Strong<dyn IKeystoreCompatService> =
-        match binder::get_interface(COMPAT_NAME) {
-            Ok(cs) => cs,
-            Err(e) => {
-                eprintln!("Failed to get {COMPAT_NAME} service, skipping test: {e:?}");
-                return;
-            }
-        };
+        binder::get_interface(TEST_COMPAT_NAME).expect("Failed to get compat service");
     let secure_clock = match compat_service.getSecureClock() {
         Ok(sc) => sc,
         Err(e) => {
@@ -339,13 +328,7 @@ fn test_secure_clock() {
 fn test_shared_secret() {
     ensure_compat_service_started();
     let compat_service: binder::Strong<dyn IKeystoreCompatService> =
-        match binder::get_interface(COMPAT_NAME) {
-            Ok(cs) => cs,
-            Err(e) => {
-                eprintln!("Failed to get {COMPAT_NAME} service, skipping test: {e:?}");
-                return;
-            }
-        };
+        binder::get_interface(TEST_COMPAT_NAME).expect("Failed to get compat service");
     let shared_secret = match compat_service.getSharedSecret(SecurityLevel::TRUSTED_ENVIRONMENT) {
         Ok(ss) => ss,
         Err(e) => {
@@ -441,7 +424,7 @@ fn test_soft_curve25519() {
 
     // We should always be able to get the software implementation of KeyMint.
     let compat_service: Strong<dyn IKeystoreCompatService> =
-        binder::get_interface(COMPAT_NAME).expect("Failed to get compat service");
+        binder::get_interface(TEST_COMPAT_NAME).expect("Failed to get compat service");
     let soft_dev = compat_service
         .getKeyMintDevice(SecurityLevel::SOFTWARE)
         .expect("Failed to get SOFTWARE KeyMint device");

@@ -14,15 +14,33 @@
 
 //! Export into Rust a function to create a KeyMintDevice and add it as a service.
 
-#[allow(missing_docs)] // TODO remove this
-extern "C" {
-    fn addKeyMintDeviceService() -> i32;
+unsafe extern "C" {
+    /// Start a KeyMint compatibility wrapper service.
+    ///
+    /// Returns a binder status value.
+    safe fn addKeyMintDeviceService() -> i32;
+
+    /// Start a KeyMint compatibility wrapper service registered with the provided name.
+    ///
+    /// Returns a binder status value.
+    fn addNamedKeyMintDeviceService(instance_name: *const std::ffi::c_char) -> i32;
 }
 
-#[allow(missing_docs)] // TODO remove this
+/// Start a KeyMint compatibility wrapper service.
+///
+/// Returns a binder status value.
 pub fn add_keymint_device_service() -> i32 {
-    // SAFETY: This is always safe to call.
-    unsafe { addKeyMintDeviceService() }
+    addKeyMintDeviceService()
+}
+
+/// Start a KeyMint compatibility wrapper service registered with the provided name.
+///
+/// Returns a binder status value.
+pub fn add_named_keymint_device_service(name: &str) -> i32 {
+    let name = std::ffi::CString::new(name).unwrap();
+    // SAFETY: The `name` C string is valid for the duration of the call, and
+    // the underlying C++ code does not hold on to the pointer.
+    unsafe { addNamedKeyMintDeviceService(name.as_ptr()) }
 }
 
 #[cfg(test)]
