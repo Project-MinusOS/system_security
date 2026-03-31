@@ -131,7 +131,7 @@ use crate::error::{
     error_to_serialized_error, into_binder, into_logged_binder, map_km_error, Error, ErrorCode,
     ResponseCode, SerializedError,
 };
-use crate::metrics_store::log_key_operation_event_stats;
+use crate::metrics_store::{log_key_operation_event_stats, log_operation_latency};
 use crate::utils::{watchdog as wd, AppUid};
 use crate::{ks_err, log_client_err};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
@@ -139,6 +139,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     SecurityLevel::SecurityLevel,
 };
 use android_hardware_security_keymint::binder::{BinderFeatures, Strong};
+use android_security_metrics::aidl::android::security::metrics::OperationType::OperationType;
 use android_system_keystore2::aidl::android::system::keystore2::{
     IKeystoreOperation::BnKeystoreOperation, IKeystoreOperation::IKeystoreOperation,
 };
@@ -147,8 +148,7 @@ use log::{error, warn};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, MutexGuard, Weak},
-    time::Duration,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 /// Operations have `Outcome::Unknown` as long as they are active. They transition
@@ -183,6 +183,13 @@ pub struct Operation {
     auth_info: Mutex<AuthInfo>,
     forced: bool,
     logging_info: LoggingInfo,
+    operation_metrics: Mutex<OperationMetrics>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct OperationMetrics {
+    total_duration: Duration,
+    call_count: usize,
 }
 
 /// Keeps track of the information required for logging operations.
@@ -235,6 +242,7 @@ impl Operation {
             auth_info: Mutex::new(auth_info),
             forced,
             logging_info,
+            operation_metrics: Mutex::new(OperationMetrics::default()),
         }
     }
 
@@ -457,6 +465,27 @@ impl Operation {
             map_km_error(self.km_op.abort()).context(ks_err!("KeyMint::abort failed."))
         }
     }
+
+    /// Update operation processing metrics (update/finish), with latency.
+    fn update_metrics(&self, latency: Duration) {
+        let mut metrics = self.operation_metrics.lock().unwrap();
+        metrics.total_duration += latency;
+        metrics.call_count += 1;
+    }
+
+    /// Log latency for the cumulative operation data processing.
+    fn log_latency(&self, is_success: bool) {
+        let metrics = self.operation_metrics.lock().unwrap();
+        if metrics.call_count > 0 {
+            log_operation_latency(
+                OperationType::ENTIRE_OPERATION,
+                self.logging_info.sec_level,
+                &self.logging_info.op_params,
+                is_success,
+                metrics.total_duration,
+            );
+        }
+    }
 }
 
 impl Drop for Operation {
@@ -470,6 +499,8 @@ impl Drop for Operation {
             &guard,
             self.logging_info.key_upgraded,
         );
+        self.log_latency(matches!(*guard, Outcome::Success));
+
         if let Outcome::Unknown = *guard {
             drop(guard);
             // If the operation was still active we call abort, setting
@@ -798,7 +829,8 @@ impl KeystoreOperation {
             Ok(mut mutex_guard) => {
                 let result = match &*mutex_guard {
                     Some(op) => {
-                        let result = f(op);
+                        let (latency, result) = crate::timed_call!(f(op));
+                        op.update_metrics(latency);
                         // Any error here means we can discard the operation.
                         if result.is_err() {
                             delete_op = true;
