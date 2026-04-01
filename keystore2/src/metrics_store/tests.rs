@@ -25,6 +25,43 @@ use android_security_metrics::aidl::android::security::metrics::{
 };
 
 #[test]
+fn test_round_latency_logic() {
+    let test_cases = [
+        (0, 0), // <= 10ms: nearest 5ms
+        (2, 0),
+        (3, 5),
+        (5, 5),
+        (7, 5),
+        (8, 10),
+        (10, 10),
+        (11, 10), // 10-100ms: nearest 10ms
+        (14, 10),
+        (15, 20),
+        (94, 90),
+        (95, 100),
+        (100, 100),
+        (101, 100), // > 100ms: 50ms step
+        (124, 100),
+        (125, 150),
+        (974, 950),
+        (975, 1000),
+        (1000, 1000), // 1s-10s: 500ms steps
+        (1249, 1000),
+        (1250, 1500),
+        (12345, 10000), // 10s+: 5000ms steps
+    ];
+
+    for (input, expected) in test_cases {
+        assert_eq!(
+            round_latency(Duration::from_millis(input)),
+            expected,
+            "Failed rounding for {}ms",
+            input
+        );
+    }
+}
+
+#[test]
 fn test_enum_show() {
     let algo = MetricsAlgorithm::RSA;
     assert_eq!("RSA    ", algo.show());
@@ -361,4 +398,159 @@ fn test_log_key_operation_per_uid() {
     let atoms = METRICS_STORE.get_atoms(AtomID::KEY_OPERATION_PER_UID).unwrap();
     let atom = atoms.iter().find(|a| find_operation_atom(a)).expect("Atom should be present");
     assert_eq!(atom.count, initial_count + 1);
+}
+
+#[test]
+fn test_log_operation_latency_aggregation() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
+    let params = vec![create_key_param_with_algorithm(Algorithm::RSA)];
+    let sec_level = SecurityLevel::TRUSTED_ENVIRONMENT;
+
+    // Log same operation twice.
+    log_operation_latency(
+        MetricsOperationType::GENERATE_KEY,
+        sec_level,
+        &params,
+        true,
+        Duration::from_millis(150),
+    );
+    log_operation_latency(
+        MetricsOperationType::GENERATE_KEY,
+        sec_level,
+        &params,
+        true,
+        Duration::from_millis(150),
+    );
+
+    // Log different bucket.
+    log_operation_latency(
+        MetricsOperationType::GENERATE_KEY,
+        sec_level,
+        &params,
+        true,
+        Duration::from_millis(1500),
+    );
+
+    let atoms = METRICS_STORE.get_atoms(AtomID::OPERATION_LATENCY).unwrap();
+
+    let mut count_150 = 0;
+    let mut count_1500 = 0;
+
+    for atom in atoms {
+        if let KeystoreAtomPayload::OperationLatency(ref op) = atom.payload {
+            if op.latency_ms == 150 {
+                count_150 += atom.count;
+            } else if op.latency_ms == 1500 {
+                count_1500 += atom.count;
+            }
+        }
+    }
+
+    assert!(count_150 >= 2);
+    assert!(count_1500 >= 1);
+}
+
+#[test]
+fn test_log_operation_latency_outcomes() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
+    let params = vec![create_key_param_with_algorithm(Algorithm::RSA)];
+    let sec_level = SecurityLevel::TRUSTED_ENVIRONMENT;
+
+    // Test Success
+    log_operation_latency(
+        MetricsOperationType::ENTIRE_OPERATION,
+        sec_level,
+        &params,
+        true,
+        Duration::from_millis(5),
+    );
+
+    // Test Failure
+    log_operation_latency(
+        MetricsOperationType::ENTIRE_OPERATION,
+        sec_level,
+        &params,
+        false,
+        Duration::from_millis(5),
+    );
+
+    let atoms = METRICS_STORE.get_atoms(AtomID::OPERATION_LATENCY).unwrap();
+
+    let mut success_found = false;
+    let mut failure_found = false;
+
+    for atom in atoms {
+        if let KeystoreAtomPayload::OperationLatency(ref op) = atom.payload {
+            if op.operation_type == MetricsOperationType::ENTIRE_OPERATION {
+                if op.is_success {
+                    success_found = true;
+                } else {
+                    failure_found = true;
+                }
+            }
+        }
+    }
+
+    assert!(success_found, "Success outcome not found");
+    assert!(failure_found, "Failure outcome not found");
+}
+
+#[test]
+fn test_log_operation_latency_eccurve() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
+    let params = vec![
+        create_key_param_with_algorithm(Algorithm::EC),
+        KeyParameter { tag: Tag::EC_CURVE, value: KeyParameterValue::EcCurve(EcCurve::P_256) },
+    ];
+
+    log_operation_latency(
+        MetricsOperationType::GENERATE_KEY,
+        SecurityLevel::TRUSTED_ENVIRONMENT,
+        &params,
+        true,
+        Duration::from_millis(50),
+    );
+
+    let atoms = METRICS_STORE.get_atoms(AtomID::OPERATION_LATENCY).unwrap();
+    let found = atoms.iter().any(|atom| {
+        matches!(atom.payload, KeystoreAtomPayload::OperationLatency(ref op)
+            if op.algorithm == MetricsAlgorithm::EC && op.ec_curve == MetricsEcCurve::P_256)
+    });
+    assert!(found, "EC_CURVE P_256 not reported correctly");
+}
+
+#[test]
+fn test_log_operation_latency_mldsa() {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
+    let params = vec![
+        create_key_param_with_algorithm(Algorithm::ML_DSA),
+        create_key_param_with_mldsa_variant(MlDsaVariant::ML_DSA_65),
+    ];
+
+    log_operation_latency(
+        MetricsOperationType::GENERATE_KEY,
+        SecurityLevel::TRUSTED_ENVIRONMENT,
+        &params,
+        true,
+        Duration::from_millis(50),
+    );
+
+    let atoms = METRICS_STORE.get_atoms(AtomID::OPERATION_LATENCY).unwrap();
+    let found = atoms.iter().any(|atom| {
+        matches!(atom.payload, KeystoreAtomPayload::OperationLatency(ref op)
+            if op.algorithm == MetricsAlgorithm::ML_DSA_65)
+    });
+    assert!(found, "ML_DSA_65 algorithm variant not reported correctly");
 }
