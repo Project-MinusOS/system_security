@@ -41,7 +41,7 @@ rust_test {
     crate_name: "keystore2_km_compat_test",
     srcs: ["tests.rs"],
     test_suites: ["general-tests"],
-    auto_gen_config: true,
+    test_config: "AndroidTest.xml",
     defaults: [
         "keymint_use_latest_hal_aidl_rust",
     ],
