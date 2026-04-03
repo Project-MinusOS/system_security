@@ -36,12 +36,13 @@ use android_security_metrics::aidl::android::security::metrics::{
     KeyCreationPerUid::KeyCreationPerUid, KeyCreationWithAuthInfo::KeyCreationWithAuthInfo,
     KeyCreationWithGeneralInfo::KeyCreationWithGeneralInfo,
     KeyCreationWithPurposeAndModesInfo::KeyCreationWithPurposeAndModesInfo,
-    KeyOperationPerUid::KeyOperationPerUid,
+    KeyOperationPerUid::KeyOperationPerUid, KeyOperationStreamingStats::KeyOperationStreamingStats,
     KeyOperationWithGeneralInfo::KeyOperationWithGeneralInfo,
     KeyOperationWithPurposeAndModesInfo::KeyOperationWithPurposeAndModesInfo,
     KeyOrigin::KeyOrigin as MetricsKeyOrigin, KeysPerUid::KeysPerUid,
     Keystore2AtomWithOverflow::Keystore2AtomWithOverflow, KeystoreAtom::KeystoreAtom,
-    KeystoreAtomPayload::KeystoreAtomPayload, Outcome::Outcome as MetricsOutcome,
+    KeystoreAtomPayload::KeystoreAtomPayload, OperationLatency::OperationLatency,
+    OperationType::OperationType as MetricsOperationType, Outcome::Outcome as MetricsOutcome,
     Purpose::Purpose as MetricsPurpose, RkpError::RkpError as MetricsRkpError,
     RkpErrorStats::RkpErrorStats, SecurityLevel::SecurityLevel as MetricsSecurityLevel,
     Storage::Storage as MetricsStorage,
@@ -50,6 +51,17 @@ use anyhow::{anyhow, Context, Result};
 use log::{error, warn};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
+
+/// Helper macro to time a function call and return a tuple of (Duration, Result).
+#[macro_export]
+macro_rules! timed_call {
+    ($f:expr) => {{
+        let start = std::time::Instant::now();
+        let result = $f;
+        (start.elapsed(), result)
+    }};
+}
 
 #[cfg(test)]
 mod tests;
@@ -148,7 +160,9 @@ impl MetricsStore {
             | AtomID::KEY_OPERATION_WITH_GENERAL_INFO
             | AtomID::KEY_CREATION_PER_UID
             | AtomID::KEY_OPERATION_PER_UID
-            | AtomID::RKP_ERROR_STATS => {
+            | AtomID::RKP_ERROR_STATS
+            | AtomID::OPERATION_LATENCY
+            | AtomID::KEY_OPERATION_STREAMING_STATS => {
                 let metrics_store_guard = self.metrics_store.lock().unwrap();
                 metrics_store_guard.get(&atom_id).map_or(
                     Ok(Vec::<KeystoreAtom>::new()),
@@ -272,35 +286,15 @@ fn process_key_creation_event_stats<U>(
 
     key_creation_with_auth_info.security_level = process_security_level(sec_level);
 
-    let mut algorithm = MetricsAlgorithm::ALGORITHM_UNSPECIFIED;
+    let (algorithm, key_size, ec_curve) = parse_key_parameters(key_params);
+    let key_size = key_size.unwrap_or(-1);
+    key_creation_with_purpose_and_modes_info.algorithm = algorithm;
+    key_creation_with_general_info.algorithm = algorithm;
+    key_creation_with_general_info.key_size = key_size;
+    key_creation_with_general_info.ec_curve = ec_curve;
 
     for key_param in key_params.iter().map(KsKeyParamValue::from) {
         match key_param {
-            KsKeyParamValue::Algorithm(a) => {
-                algorithm = match a {
-                    Algorithm::RSA => MetricsAlgorithm::RSA,
-                    Algorithm::EC => MetricsAlgorithm::EC,
-                    Algorithm::AES => MetricsAlgorithm::AES,
-                    Algorithm::TRIPLE_DES => MetricsAlgorithm::TRIPLE_DES,
-                    Algorithm::HMAC => MetricsAlgorithm::HMAC,
-                    // Don't touch the algorithm for ML-DSA since
-                    // MetricsAlgorithm has an enum value for each ML-DSA
-                    // variant, which is determined from
-                    // KsKeyParameterValue::MlDsaVariant.
-                    Algorithm::ML_DSA => algorithm,
-                    _ => MetricsAlgorithm::ALGORITHM_UNSPECIFIED,
-                };
-            }
-            KsKeyParamValue::MlDsaVariant(v) => {
-                algorithm = match v {
-                    MlDsaVariant::ML_DSA_65 => MetricsAlgorithm::ML_DSA_65,
-                    MlDsaVariant::ML_DSA_87 => MetricsAlgorithm::ML_DSA_87,
-                    _ => MetricsAlgorithm::ALGORITHM_UNSPECIFIED,
-                };
-            }
-            KsKeyParamValue::KeySize(s) => {
-                key_creation_with_general_info.key_size = s;
-            }
             KsKeyParamValue::HardwareAuthenticatorType(a) => {
                 key_creation_with_auth_info.user_auth_type = match a {
                     HardwareAuthenticatorType::NONE => MetricsHardwareAuthenticatorType::NONE,
@@ -349,29 +343,11 @@ fn process_key_creation_event_stats<U>(
                     k,
                 );
             }
-            KsKeyParamValue::EcCurve(e) => {
-                key_creation_with_general_info.ec_curve = match e {
-                    EcCurve::P_224 => MetricsEcCurve::P_224,
-                    EcCurve::P_256 => MetricsEcCurve::P_256,
-                    EcCurve::P_384 => MetricsEcCurve::P_384,
-                    EcCurve::P_521 => MetricsEcCurve::P_521,
-                    EcCurve::CURVE_25519 => MetricsEcCurve::CURVE_25519,
-                    _ => MetricsEcCurve::EC_CURVE_UNSPECIFIED,
-                }
-            }
             KsKeyParamValue::AttestationChallenge(_) => {
                 key_creation_with_general_info.attestation_requested = true;
             }
             _ => {}
         }
-    }
-
-    key_creation_with_general_info.algorithm = algorithm;
-    key_creation_with_purpose_and_modes_info.algorithm = algorithm;
-
-    if key_creation_with_general_info.algorithm == MetricsAlgorithm::EC {
-        // Do not record key sizes if Algorithm = EC, in order to reduce cardinality.
-        key_creation_with_general_info.key_size = -1;
     }
 
     let key_creation_per_uid = KeyCreationPerUid {
@@ -400,6 +376,7 @@ pub fn log_key_operation_event_stats(
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
+    is_attested: bool,
 ) {
     let (
         key_operation_with_general_info,
@@ -412,6 +389,7 @@ pub fn log_key_operation_event_stats(
         op_params,
         op_outcome,
         key_upgraded,
+        is_attested,
     );
     METRICS_STORE
         .insert_atom(AtomID::KEY_OPERATION_WITH_GENERAL_INFO, key_operation_with_general_info);
@@ -434,6 +412,7 @@ fn process_key_operation_event_stats(
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
+    is_attested: bool,
 ) -> (KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload) {
     let security_level = process_security_level(sec_level);
     let key_operation_per_uid = KeyOperationPerUid { uid, security_level };
@@ -442,6 +421,7 @@ fn process_key_operation_event_stats(
         outcome: MetricsOutcome::OUTCOME_UNSPECIFIED,
         error_code: 1,
         security_level,
+        is_attested,
         // Default for bool is false (for key_upgraded field).
         ..Default::default()
     };
@@ -672,6 +652,155 @@ fn pull_keys_per_uid() -> Result<Vec<KeystoreAtom>> {
         .collect())
 }
 
+pub(crate) fn parse_key_parameters(
+    params: &[KeyParameter],
+) -> (MetricsAlgorithm, Option<i32>, MetricsEcCurve) {
+    let mut algorithm = MetricsAlgorithm::ALGORITHM_UNSPECIFIED;
+    let mut key_size = None;
+    let mut ec_curve = MetricsEcCurve::EC_CURVE_UNSPECIFIED;
+
+    for p in params.iter().map(KsKeyParamValue::from) {
+        match p {
+            KsKeyParamValue::Algorithm(alg) => {
+                algorithm = match alg {
+                    Algorithm::RSA => MetricsAlgorithm::RSA,
+                    Algorithm::EC => MetricsAlgorithm::EC,
+                    Algorithm::AES => MetricsAlgorithm::AES,
+                    Algorithm::TRIPLE_DES => MetricsAlgorithm::TRIPLE_DES,
+                    Algorithm::HMAC => MetricsAlgorithm::HMAC,
+                    // Don't touch the algorithm for ML-DSA since
+                    // MetricsAlgorithm has an enum value for each ML-DSA
+                    // variant, which is determined from
+                    // KsKeyParameterValue::MlDsaVariant.
+                    Algorithm::ML_DSA => algorithm,
+                    _ => MetricsAlgorithm::ALGORITHM_UNSPECIFIED,
+                };
+            }
+            KsKeyParamValue::MlDsaVariant(v) => {
+                algorithm = match v {
+                    MlDsaVariant::ML_DSA_65 => MetricsAlgorithm::ML_DSA_65,
+                    MlDsaVariant::ML_DSA_87 => MetricsAlgorithm::ML_DSA_87,
+                    _ => algorithm,
+                };
+            }
+            KsKeyParamValue::KeySize(sz) => {
+                key_size = Some(sz);
+            }
+            KsKeyParamValue::EcCurve(curve) => {
+                ec_curve = match curve {
+                    EcCurve::P_224 => MetricsEcCurve::P_224,
+                    EcCurve::P_256 => MetricsEcCurve::P_256,
+                    EcCurve::P_384 => MetricsEcCurve::P_384,
+                    EcCurve::P_521 => MetricsEcCurve::P_521,
+                    EcCurve::CURVE_25519 => MetricsEcCurve::CURVE_25519,
+                    _ => MetricsEcCurve::EC_CURVE_UNSPECIFIED,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    if algorithm == MetricsAlgorithm::EC {
+        // Do not record key sizes if Algorithm = EC, in order to reduce cardinality.
+        key_size = None;
+    }
+
+    (algorithm, key_size, ec_curve)
+}
+
+/// Log key operation latency events to be sent to statsd
+pub fn log_operation_latency(
+    op_type: MetricsOperationType,
+    sec_level: SecurityLevel,
+    params: &[KeyParameter],
+    is_success: bool,
+    latency: Duration,
+) {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+
+    let (algorithm, key_size, ec_curve) = parse_key_parameters(params);
+    if algorithm == MetricsAlgorithm::ALGORITHM_UNSPECIFIED {
+        warn!("Unknown algorithm in log_operation_latency - skipping metrics");
+        return;
+    }
+    let key_size = key_size.unwrap_or(-1);
+    let security_level = process_security_level(sec_level);
+    let latency_ms = round_latency(latency);
+
+    METRICS_STORE.insert_atom(
+        AtomID::OPERATION_LATENCY,
+        KeystoreAtomPayload::OperationLatency(OperationLatency {
+            operation_type: op_type,
+            algorithm,
+            key_size,
+            ec_curve,
+            security_level,
+            is_success,
+            latency_ms,
+        }),
+    );
+}
+
+/// Log key operation streaming stats events to be sent to statsd
+pub fn log_key_operation_streaming_stats(
+    algorithm: MetricsAlgorithm,
+    is_success: bool,
+    call_count: i32,
+    total_input_bytes: u64,
+) {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+    METRICS_STORE.insert_atom(
+        AtomID::KEY_OPERATION_STREAMING_STATS,
+        KeystoreAtomPayload::KeyOperationStreamingStats(KeyOperationStreamingStats {
+            algorithm,
+            is_success,
+            call_count: round_logarithmic(call_count as u64, 10, 1, 20) as i32,
+            total_input_bytes: round_logarithmic(total_input_bytes, 10, 1, 0),
+        }),
+    );
+}
+
+/// Rounds a value to a bucket that preserves relative precision while limiting cardinality.
+/// * `buckets_per_decade`: number of buckets between 10^n and 10^n+1.
+/// * `min_step`: the smallest rounding increment allowed
+/// * `no_round_threshold`: values below this threshold are not rounded
+fn round_logarithmic(
+    val: u64,
+    buckets_per_decade: u32,
+    min_step: u64,
+    no_round_threshold: u64,
+) -> i64 {
+    if val <= no_round_threshold {
+        return val as i64;
+    }
+    let exponent = val.ilog10();
+    let step = 10u64.pow(exponent + 1) / (buckets_per_decade as u64);
+    let step = std::cmp::max(step, min_step);
+    let rounded = (val + step / 2) / step * step;
+    std::cmp::min(rounded, i64::MAX as u64) as i64
+}
+
+/// Rounds latency to a value that preserves useful precision while limiting cardinality.
+///
+/// Cardinality management is critical for metrics because the internal cache is
+/// limited to 250 unique entries. Latency is the highest-cardinality dimension.
+///
+/// The function follows the rounding logic documented in OperationLatency.aidl.
+fn round_latency(latency: std::time::Duration) -> i32 {
+    let ms = latency.as_millis().clamp(0, i32::MAX as u128) as u32;
+    let step = match ms {
+        0..=10 => 5,
+        11..=100 => 10,
+        _ => 10u32.pow(ms.ilog10()) / 2,
+    };
+    let rounded_ms = (ms + step / 2) / step * step;
+    rounded_ms as i32
+}
+
 /// Log error events related to Remote Key Provisioning (RKP).
 pub fn log_rkp_error_stats(rkp_error: MetricsRkpError, sec_level: &SecurityLevel) {
     let rkp_error_stats = KeystoreAtomPayload::RkpErrorStats(RkpErrorStats {
@@ -843,6 +972,8 @@ impl_summary_enum!(AtomID, 14,
     RKP_ERROR_STATS => "RKP_ERR",
     CRASH_STATS => "CRASH",
     KEYS_PER_UID => "KEYS_PER_UID",
+    OPERATION_LATENCY => "OP_LATENCY",
+    KEY_OPERATION_STREAMING_STATS => "KEYOP_STREAMING",
 );
 
 impl_summary_enum!(MetricsStorage, 28,
@@ -936,6 +1067,15 @@ impl_summary_enum!(MetricsRkpError, 6,
     RKP_ERROR_UNSPECIFIED => "UNSPEC",
     OUT_OF_KEYS => "OOKEYS",
     FALL_BACK_DURING_HYBRID => "FALLBK",
+);
+
+impl_summary_enum!(MetricsOperationType, 7,
+    UNSPECIFIED => "UNSPEC",
+    GENERATE_KEY => "GENKEY",
+    IMPORT_KEY => "IMPKEY",
+    IMPORT_WRAPPED_KEY => "IMPWKEY",
+    CREATE_OPERATION => "BEGIN",
+    ENTIRE_OPERATION => "OPERATION",
 );
 
 /// Convert an argument into a corresponding format clause.  (This is needed because
@@ -1096,6 +1236,27 @@ impl Summary for KeystoreAtomPayload {
             }
             KeystoreAtomPayload::KeyOperationPerUid(v) => {
                 format!("uid={} sec={}", v.uid, v.security_level.show())
+            }
+            KeystoreAtomPayload::OperationLatency(v) => {
+                format!(
+                    "op_type={} alg={} size={} crv={} sec={} success? {} latency={}",
+                    v.operation_type.show(),
+                    v.algorithm.show(),
+                    v.key_size,
+                    v.ec_curve.show(),
+                    v.security_level.show(),
+                    if v.is_success { "Y" } else { "N" },
+                    v.latency_ms
+                )
+            }
+            KeystoreAtomPayload::KeyOperationStreamingStats(v) => {
+                format!(
+                    "alg={} success={} call_cnt={} bytes={}",
+                    v.algorithm.show(),
+                    v.is_success,
+                    v.call_count,
+                    v.total_input_bytes
+                )
             }
         }
     }

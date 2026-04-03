@@ -759,6 +759,11 @@ impl KeyEntry {
     pub fn pure_cert(&self) -> bool {
         self.pure_cert
     }
+    /// This returns true if the entry corresponds to an attested key.
+    /// A key is considered attested if it has an associated certificate chain.
+    pub fn is_attested(&self) -> bool {
+        self.cert_chain.is_some()
+    }
 }
 
 /// Indicates the sub component of a key entry for persistent storage.

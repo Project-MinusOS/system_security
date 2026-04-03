@@ -25,10 +25,12 @@ use crate::error::{
 use crate::globals::{
     get_remotely_provisioned_component_name, DB, ENFORCEMENTS, LEGACY_IMPORTER, SUPER_KEY,
 };
-use crate::key_parameter::KeyParameter as KsKeyParam;
 use crate::key_parameter::KeyParameterValue as KsKeyParamValue;
+use crate::key_parameter::{KeyParameter as KsKeyParam, KmKeyParameter};
 use crate::ks_err;
-use crate::metrics_store::log_key_creation_event_stats;
+use crate::metrics_store::{
+    log_key_creation_event_stats, log_operation_latency, parse_key_parameters,
+};
 use crate::remote_provisioning::RemProvState;
 use crate::security_level_manager;
 use crate::super_key::{KeyBlob, SuperKeyManager};
@@ -57,6 +59,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_hardware_security_keymint::binder::{BinderFeatures, Strong, ThreadState};
+use android_security_metrics::aidl::android::security::metrics::OperationType::OperationType;
 use android_system_keystore2::aidl::android::system::keystore2::{
     AuthenticatorSpec::AuthenticatorSpec, CreateOperationResponse::CreateOperationResponse,
     Domain::Domain, EphemeralStorageKeyResponse::EphemeralStorageKeyResponse,
@@ -244,6 +247,7 @@ impl KeystoreSecurityLevel {
         // so that we can use it by reference like the blob provided by the key descriptor.
         // Otherwise, we would have to clone the blob from the key descriptor.
         let scoping_blob: Vec<u8>;
+        let mut is_attested = false;
         let (km_blob, key_properties, key_id_guard, blob_metadata) = match key.domain {
             Domain::BLOB => {
                 check_key_permission(KeyPerm::Use, key, &None)
@@ -278,7 +282,7 @@ impl KeystoreSecurityLevel {
                             db.borrow_mut().load_key_entry(
                                 key,
                                 KeyType::Client,
-                                KeyEntryLoadBits::KM,
+                                KeyEntryLoadBits::BOTH,
                                 caller_uid,
                                 |k, av| {
                                     check_key_permission(KeyPerm::Use, k, &av)?;
@@ -291,6 +295,8 @@ impl KeystoreSecurityLevel {
                         })
                     })
                     .context(ks_err!("Failed to load key blob."))?;
+
+                is_attested = key_entry.is_attested();
 
                 let (blob, blob_metadata) =
                     key_entry.take_key_blob_info().ok_or_else(Error::sys).context(ks_err!(
@@ -384,13 +390,28 @@ impl KeystoreSecurityLevel {
 
         let op_params: Vec<KeyParameter> = operation_parameters.to_vec();
 
+        let (algorithm, _, _) = if let Some((_, ref props)) = key_properties {
+            let km_props: Vec<KmKeyParameter> =
+                props.iter().map(|kp| kp.clone().into_key_parameter()).collect();
+            parse_key_parameters(&km_props)
+        } else {
+            parse_key_parameters(operation_parameters)
+        };
+
         let operation = match begin_result.operation {
             Some(km_op) => self.operation_db.create_operation(
                 km_op,
                 caller_uid,
                 auth_info,
                 forced,
-                LoggingInfo::new(self.security_level, purpose, op_params, upgraded_blob.is_some()),
+                LoggingInfo::new(
+                    self.security_level,
+                    purpose,
+                    algorithm,
+                    op_params,
+                    upgraded_blob.is_some(),
+                    is_attested,
+                ),
             ),
             None => {
                 return Err(Error::sys()).context(ks_err!(
@@ -1168,7 +1189,16 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
     ) -> binder::Result<CreateOperationResponse> {
         let _wp = self.watch("IKeystoreSecurityLevel::createOperation");
         security_level_manager::notify_operation_performed(self.security_level);
-        self.create_operation(key, operation_parameters, forced).map_err(into_logged_binder)
+        let (latency, result) =
+            crate::timed_call!(self.create_operation(key, operation_parameters, forced));
+        log_operation_latency(
+            OperationType::CREATE_OPERATION,
+            self.security_level,
+            operation_parameters,
+            result.is_ok(),
+            latency,
+        );
+        result.map_err(into_logged_binder)
     }
     fn generateKey(
         &self,
@@ -1182,13 +1212,21 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         // time than other operations
         let _wp = self.watch_millis("IKeystoreSecurityLevel::generateKey", 5000);
         security_level_manager::notify_operation_performed(self.security_level);
-        let result = self.generate_key(key, attestation_key, params, flags, entropy);
+        let (latency, result) =
+            crate::timed_call!(self.generate_key(key, attestation_key, params, flags, entropy));
         log_key_creation_event_stats(
             AppUid::calling().0 as i32,
             self.security_level,
             params,
             KeyOrigin::GENERATED,
             &result,
+        );
+        log_operation_latency(
+            OperationType::GENERATE_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
         );
         log_key_generated(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
@@ -1203,13 +1241,21 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importKey");
         security_level_manager::notify_operation_performed(self.security_level);
-        let result = self.import_key(key, attestation_key, params, flags, key_data);
+        let (latency, result) =
+            crate::timed_call!(self.import_key(key, attestation_key, params, flags, key_data));
         log_key_creation_event_stats(
             AppUid::calling().0 as i32,
             self.security_level,
             params,
             KeyOrigin::IMPORTED,
             &result,
+        );
+        log_operation_latency(
+            OperationType::IMPORT_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
         );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
@@ -1224,14 +1270,26 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importWrappedKey");
         security_level_manager::notify_operation_performed(self.security_level);
-        let result =
-            self.import_wrapped_key(key, wrapping_key, masking_key, params, authenticators);
+        let (latency, result) = crate::timed_call!(self.import_wrapped_key(
+            key,
+            wrapping_key,
+            masking_key,
+            params,
+            authenticators
+        ));
         log_key_creation_event_stats(
             AppUid::calling().0 as i32,
             self.security_level,
             params,
             KeyOrigin::SECURELY_IMPORTED,
             &result,
+        );
+        log_operation_latency(
+            OperationType::IMPORT_WRAPPED_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
         );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
