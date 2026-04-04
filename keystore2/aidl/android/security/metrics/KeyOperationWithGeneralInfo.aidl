@@ -29,5 +29,4 @@ parcelable KeyOperationWithGeneralInfo {
     int error_code;
     boolean key_upgraded;
     SecurityLevel security_level;
-    boolean is_attested;
 }
