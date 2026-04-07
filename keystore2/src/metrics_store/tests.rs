@@ -83,7 +83,8 @@ fn test_user_auth_type() {
     for (auth_types, expected) in test_cases {
         let key_params: Vec<_> =
             auth_types.iter().map(|a| create_key_param_with_auth_type(*a)).collect();
-        let (_, atom_with_auth_info, _) = process_key_creation_event_stats(
+        let (_, atom_with_auth_info, _, _) = process_key_creation_event_stats(
+            0,
             SecurityLevel::TRUSTED_ENVIRONMENT,
             &key_params,
             KeyOrigin::GENERATED,
@@ -126,7 +127,8 @@ fn test_log_auth_timeout_seconds() {
     for (timeouts, expected) in test_cases {
         let key_params: Vec<_> =
             timeouts.iter().map(|t| create_key_param_with_auth_timeout(*t)).collect();
-        let (_, atom_with_auth_info, _) = process_key_creation_event_stats(
+        let (_, atom_with_auth_info, _, _) = process_key_creation_event_stats(
+            0,
             SecurityLevel::TRUSTED_ENVIRONMENT,
             &key_params,
             KeyOrigin::GENERATED,
@@ -153,8 +155,8 @@ fn test_security_level() {
         (SecurityLevel(123), MetricsSecurityLevel::SECURITY_LEVEL_UNSPECIFIED),
     ];
     for (security_level, expected) in test_cases {
-        let (_, atom_with_auth_info, _) =
-            process_key_creation_event_stats(security_level, &[], KeyOrigin::GENERATED, &Ok(()));
+        let (_, atom_with_auth_info, _, _) =
+            process_key_creation_event_stats(0, security_level, &[], KeyOrigin::GENERATED, &Ok(()));
         assert!(matches!(
             atom_with_auth_info,
             KeystoreAtomPayload::KeyCreationWithAuthInfo(a)
@@ -238,8 +240,9 @@ fn test_algorithm() {
         ),
     ];
     for (key_params, expected) in test_cases {
-        let (atom_with_general_info, _, atom_with_purpose_and_modes) =
+        let (atom_with_general_info, _, atom_with_purpose_and_modes, _) =
             process_key_creation_event_stats(
+                0,
                 SecurityLevel::SOFTWARE,
                 key_params,
                 KeyOrigin::GENERATED,
@@ -256,4 +259,94 @@ fn test_algorithm() {
                 if a.algorithm == *expected
         ));
     }
+}
+
+#[test]
+fn test_log_key_creation_per_uid() {
+    let uid = 12345;
+    let sec_level = SecurityLevel::TRUSTED_ENVIRONMENT;
+    let params = vec![create_key_param_with_algorithm(Algorithm::RSA)];
+
+    let find_creation_atom = |a: &KeystoreAtom| {
+        if let KeystoreAtomPayload::KeyCreationPerUid(ref payload) = a.payload {
+            payload.uid == uid
+                && payload.security_level
+                    == MetricsSecurityLevel::SECURITY_LEVEL_TRUSTED_ENVIRONMENT
+                && payload.algorithm == MetricsAlgorithm::RSA
+        } else {
+            false
+        }
+    };
+
+    // Log once
+    log_key_creation_event_stats(uid, sec_level, &params, KeyOrigin::GENERATED, &Ok(()));
+    let atoms = METRICS_STORE.get_atoms(AtomID::KEY_CREATION_PER_UID).unwrap();
+    let atom = atoms.iter().find(|a| find_creation_atom(a)).expect("Atom should be present");
+    let initial_count = atom.count;
+    assert!(initial_count >= 1);
+
+    // Log again and check count increases
+    log_key_creation_event_stats(uid, sec_level, &params, KeyOrigin::GENERATED, &Ok(()));
+    let atoms = METRICS_STORE.get_atoms(AtomID::KEY_CREATION_PER_UID).unwrap();
+    let atom = atoms.iter().find(|a| find_creation_atom(a)).expect("Atom should be present");
+    assert_eq!(atom.count, initial_count + 1);
+}
+
+#[test]
+fn test_log_key_creation_per_uid_verify_fields() {
+    let uid = 67890;
+    let sec_level = SecurityLevel::STRONGBOX;
+    let params = vec![
+        create_key_param_with_algorithm(Algorithm::EC),
+        create_key_param_with_auth_type(AuthType::FINGERPRINT),
+        KeyParameter {
+            tag: Tag::ATTESTATION_CHALLENGE,
+            value: KeyParameterValue::Blob(vec![1, 2, 3]),
+        },
+    ];
+
+    log_key_creation_event_stats(uid, sec_level, &params, KeyOrigin::GENERATED, &Ok(()));
+    let atoms = METRICS_STORE.get_atoms(AtomID::KEY_CREATION_PER_UID).unwrap();
+    let _ = atoms
+        .iter()
+        .find(|a| {
+            if let KeystoreAtomPayload::KeyCreationPerUid(ref payload) = a.payload {
+                payload.uid == uid
+                    && payload.security_level == MetricsSecurityLevel::SECURITY_LEVEL_STRONGBOX
+                    && payload.algorithm == MetricsAlgorithm::EC
+                    && payload.user_auth_type == MetricsAuthType::FINGERPRINT
+                    && payload.attestation_requested
+            } else {
+                false
+            }
+        })
+        .expect("Atom should be present");
+}
+
+#[test]
+fn test_log_key_operation_per_uid() {
+    let uid = 54321;
+    let sec_level = SecurityLevel::STRONGBOX;
+
+    let find_operation_atom = |a: &KeystoreAtom| {
+        if let KeystoreAtomPayload::KeyOperationPerUid(ref payload) = a.payload {
+            payload.uid == uid
+                && payload.security_level == MetricsSecurityLevel::SECURITY_LEVEL_STRONGBOX
+        } else {
+            false
+        }
+    };
+
+    // Log once
+    log_key_operation_event_stats(uid, sec_level, KeyPurpose::SIGN, &[], &Outcome::Success, false);
+    let atoms = METRICS_STORE.get_atoms(AtomID::KEY_OPERATION_PER_UID).unwrap();
+    let atom = atoms.iter().find(|a| find_operation_atom(a)).expect("Atom should be present");
+    let initial_count = atom.count;
+    assert!(initial_count >= 1);
+
+    // Log again and check count increases
+    log_key_operation_event_stats(uid, sec_level, KeyPurpose::SIGN, &[], &Outcome::Success, false);
+    let atoms = METRICS_STORE.get_atoms(AtomID::KEY_OPERATION_PER_UID).unwrap();
+    let atom = atoms.iter().find(|a| find_operation_atom(a)).expect("Atom should be present");
+    assert_eq!(atom.count, initial_count + 1);
 }
