@@ -36,7 +36,7 @@ use android_security_metrics::aidl::android::security::metrics::{
     KeyCreationPerUid::KeyCreationPerUid, KeyCreationWithAuthInfo::KeyCreationWithAuthInfo,
     KeyCreationWithGeneralInfo::KeyCreationWithGeneralInfo,
     KeyCreationWithPurposeAndModesInfo::KeyCreationWithPurposeAndModesInfo,
-    KeyOperationPerUid::KeyOperationPerUid,
+    KeyOperationPerUid::KeyOperationPerUid, KeyOperationStreamingStats::KeyOperationStreamingStats,
     KeyOperationWithGeneralInfo::KeyOperationWithGeneralInfo,
     KeyOperationWithPurposeAndModesInfo::KeyOperationWithPurposeAndModesInfo,
     KeyOrigin::KeyOrigin as MetricsKeyOrigin, KeysPerUid::KeysPerUid,
@@ -161,7 +161,8 @@ impl MetricsStore {
             | AtomID::KEY_CREATION_PER_UID
             | AtomID::KEY_OPERATION_PER_UID
             | AtomID::RKP_ERROR_STATS
-            | AtomID::OPERATION_LATENCY => {
+            | AtomID::OPERATION_LATENCY
+            | AtomID::KEY_OPERATION_STREAMING_STATS => {
                 let metrics_store_guard = self.metrics_store.lock().unwrap();
                 metrics_store_guard.get(&atom_id).map_or(
                     Ok(Vec::<KeystoreAtom>::new()),
@@ -375,6 +376,7 @@ pub fn log_key_operation_event_stats(
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
+    is_attested: bool,
 ) {
     let (
         key_operation_with_general_info,
@@ -387,6 +389,7 @@ pub fn log_key_operation_event_stats(
         op_params,
         op_outcome,
         key_upgraded,
+        is_attested,
     );
     METRICS_STORE
         .insert_atom(AtomID::KEY_OPERATION_WITH_GENERAL_INFO, key_operation_with_general_info);
@@ -409,6 +412,7 @@ fn process_key_operation_event_stats(
     op_params: &[KeyParameter],
     op_outcome: &Outcome,
     key_upgraded: bool,
+    is_attested: bool,
 ) -> (KeystoreAtomPayload, KeystoreAtomPayload, KeystoreAtomPayload) {
     let security_level = process_security_level(sec_level);
     let key_operation_per_uid = KeyOperationPerUid { uid, security_level };
@@ -417,6 +421,7 @@ fn process_key_operation_event_stats(
         outcome: MetricsOutcome::OUTCOME_UNSPECIFIED,
         error_code: 1,
         security_level,
+        is_attested,
         // Default for bool is false (for key_upgraded field).
         ..Default::default()
     };
@@ -647,7 +652,7 @@ fn pull_keys_per_uid() -> Result<Vec<KeystoreAtom>> {
         .collect())
 }
 
-fn parse_key_parameters(
+pub(crate) fn parse_key_parameters(
     params: &[KeyParameter],
 ) -> (MetricsAlgorithm, Option<i32>, MetricsEcCurve) {
     let mut algorithm = MetricsAlgorithm::ALGORITHM_UNSPECIFIED;
@@ -736,6 +741,47 @@ pub fn log_operation_latency(
             latency_ms,
         }),
     );
+}
+
+/// Log key operation streaming stats events to be sent to statsd
+pub fn log_key_operation_streaming_stats(
+    algorithm: MetricsAlgorithm,
+    is_success: bool,
+    call_count: i32,
+    total_input_bytes: u64,
+) {
+    if !keystore2_flags::atoms_v2() {
+        return;
+    }
+    METRICS_STORE.insert_atom(
+        AtomID::KEY_OPERATION_STREAMING_STATS,
+        KeystoreAtomPayload::KeyOperationStreamingStats(KeyOperationStreamingStats {
+            algorithm,
+            is_success,
+            call_count: round_logarithmic(call_count as u64, 10, 1, 20) as i32,
+            total_input_bytes: round_logarithmic(total_input_bytes, 10, 1, 0),
+        }),
+    );
+}
+
+/// Rounds a value to a bucket that preserves relative precision while limiting cardinality.
+/// * `buckets_per_decade`: number of buckets between 10^n and 10^n+1.
+/// * `min_step`: the smallest rounding increment allowed
+/// * `no_round_threshold`: values below this threshold are not rounded
+fn round_logarithmic(
+    val: u64,
+    buckets_per_decade: u32,
+    min_step: u64,
+    no_round_threshold: u64,
+) -> i64 {
+    if val <= no_round_threshold {
+        return val as i64;
+    }
+    let exponent = val.ilog10();
+    let step = 10u64.pow(exponent + 1) / (buckets_per_decade as u64);
+    let step = std::cmp::max(step, min_step);
+    let rounded = (val + step / 2) / step * step;
+    std::cmp::min(rounded, i64::MAX as u64) as i64
 }
 
 /// Rounds latency to a value that preserves useful precision while limiting cardinality.
@@ -927,6 +973,7 @@ impl_summary_enum!(AtomID, 14,
     CRASH_STATS => "CRASH",
     KEYS_PER_UID => "KEYS_PER_UID",
     OPERATION_LATENCY => "OP_LATENCY",
+    KEY_OPERATION_STREAMING_STATS => "KEYOP_STREAMING",
 );
 
 impl_summary_enum!(MetricsStorage, 28,
@@ -1200,6 +1247,15 @@ impl Summary for KeystoreAtomPayload {
                     v.security_level.show(),
                     if v.is_success { "Y" } else { "N" },
                     v.latency_ms
+                )
+            }
+            KeystoreAtomPayload::KeyOperationStreamingStats(v) => {
+                format!(
+                    "alg={} success={} call_cnt={} bytes={}",
+                    v.algorithm.show(),
+                    v.is_success,
+                    v.call_count,
+                    v.total_input_bytes
                 )
             }
         }
