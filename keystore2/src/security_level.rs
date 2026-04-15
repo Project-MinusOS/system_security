@@ -28,7 +28,7 @@ use crate::globals::{
 use crate::key_parameter::KeyParameter as KsKeyParam;
 use crate::key_parameter::KeyParameterValue as KsKeyParamValue;
 use crate::ks_err;
-use crate::metrics_store::log_key_creation_event_stats;
+use crate::metrics_store::{log_key_creation_event_stats, log_operation_latency};
 use crate::remote_provisioning::RemProvState;
 use crate::security_level_manager;
 use crate::super_key::{KeyBlob, SuperKeyManager};
@@ -57,6 +57,7 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_hardware_security_keymint::binder::{BinderFeatures, Strong, ThreadState};
+use android_security_metrics::aidl::android::security::metrics::OperationType::OperationType;
 use android_system_keystore2::aidl::android::system::keystore2::{
     AuthenticatorSpec::AuthenticatorSpec, CreateOperationResponse::CreateOperationResponse,
     Domain::Domain, EphemeralStorageKeyResponse::EphemeralStorageKeyResponse,
@@ -1168,7 +1169,16 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
     ) -> binder::Result<CreateOperationResponse> {
         let _wp = self.watch("IKeystoreSecurityLevel::createOperation");
         security_level_manager::notify_operation_performed(self.security_level);
-        self.create_operation(key, operation_parameters, forced).map_err(into_logged_binder)
+        let (latency, result) =
+            crate::timed_call!(self.create_operation(key, operation_parameters, forced));
+        log_operation_latency(
+            OperationType::CREATE_OPERATION,
+            self.security_level,
+            operation_parameters,
+            result.is_ok(),
+            latency,
+        );
+        result.map_err(into_logged_binder)
     }
     fn generateKey(
         &self,
@@ -1182,13 +1192,21 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         // time than other operations
         let _wp = self.watch_millis("IKeystoreSecurityLevel::generateKey", 5000);
         security_level_manager::notify_operation_performed(self.security_level);
-        let result = self.generate_key(key, attestation_key, params, flags, entropy);
+        let (latency, result) =
+            crate::timed_call!(self.generate_key(key, attestation_key, params, flags, entropy));
         log_key_creation_event_stats(
             AppUid::calling().0 as i32,
             self.security_level,
             params,
             KeyOrigin::GENERATED,
             &result,
+        );
+        log_operation_latency(
+            OperationType::GENERATE_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
         );
         log_key_generated(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
@@ -1203,13 +1221,21 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importKey");
         security_level_manager::notify_operation_performed(self.security_level);
-        let result = self.import_key(key, attestation_key, params, flags, key_data);
+        let (latency, result) =
+            crate::timed_call!(self.import_key(key, attestation_key, params, flags, key_data));
         log_key_creation_event_stats(
             AppUid::calling().0 as i32,
             self.security_level,
             params,
             KeyOrigin::IMPORTED,
             &result,
+        );
+        log_operation_latency(
+            OperationType::IMPORT_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
         );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
@@ -1224,14 +1250,26 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importWrappedKey");
         security_level_manager::notify_operation_performed(self.security_level);
-        let result =
-            self.import_wrapped_key(key, wrapping_key, masking_key, params, authenticators);
+        let (latency, result) = crate::timed_call!(self.import_wrapped_key(
+            key,
+            wrapping_key,
+            masking_key,
+            params,
+            authenticators
+        ));
         log_key_creation_event_stats(
             AppUid::calling().0 as i32,
             self.security_level,
             params,
             KeyOrigin::SECURELY_IMPORTED,
             &result,
+        );
+        log_operation_latency(
+            OperationType::IMPORT_WRAPPED_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
         );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)

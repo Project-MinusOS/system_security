@@ -21,20 +21,24 @@
 
 extern "C" {
 
-// Create a KeyMintDevice and add it as a service.
-int32_t addKeyMintDeviceService() {
+// Start a KeyMint compatibility wrapper service registered with the provided name.
+int32_t addNamedKeyMintDeviceService(const char* instanceName) {
     static std::mutex mutex;
     std::lock_guard<std::mutex> lock(mutex);
     static std::shared_ptr<KeystoreCompatService> ti;
     binder_status_t status = STATUS_OK;
     if (!ti) {
         ti = ndk::SharedRefBase::make<KeystoreCompatService>();
-        const auto instanceName = "android.security.compat";
         status = AServiceManager_addService(ti->asBinder().get(), instanceName);
         if (status != STATUS_OK) {
             ti.reset();
         }
     }
     return status;
+}
+
+// Start a KeyMint compatibility wrapper service.
+int32_t addKeyMintDeviceService() {
+    return addNamedKeyMintDeviceService("android.security.compat");
 }
 }
