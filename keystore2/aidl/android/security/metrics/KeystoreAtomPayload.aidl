@@ -29,6 +29,7 @@ import android.security.metrics.Keystore2AtomWithOverflow;
 import android.security.metrics.RkpErrorStats;
 import android.security.metrics.CrashStats;
 import android.security.metrics.OperationLatency;
+import android.security.metrics.KeyOperationStreamingStats;
 
 /** @hide */
 @RustDerive(Clone=true, Eq=true, PartialEq=true, Ord=true, PartialOrd=true, Hash=true)
@@ -46,4 +47,5 @@ union KeystoreAtomPayload {
     KeyCreationPerUid keyCreationPerUid;
     KeyOperationPerUid keyOperationPerUid;
     OperationLatency operationLatency;
+    KeyOperationStreamingStats keyOperationStreamingStats;
 }

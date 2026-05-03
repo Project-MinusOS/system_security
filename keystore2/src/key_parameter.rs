@@ -1102,6 +1102,11 @@ impl KeyParameter {
         &self.security_level
     }
 
+    /// Convert into KeyMint KeyParameter.
+    pub fn into_key_parameter(self) -> KmKeyParameter {
+        self.value.into()
+    }
+
     /// An authorization is a KeyParameter with an associated security level that is used
     /// to convey the key characteristics to keystore clients. This function consumes
     /// an internal KeyParameter representation to produce the Authorization wire type.
