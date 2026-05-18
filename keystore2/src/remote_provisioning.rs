@@ -82,6 +82,9 @@ impl RemProvState {
                 } | KeyParameter {
                     tag: Tag::ALGORITHM,
                     value: KeyParameterValue::Algorithm(Algorithm::EC)
+                } | KeyParameter {
+                    tag: Tag::ALGORITHM,
+                    value: KeyParameterValue::Algorithm(Algorithm::ML_DSA)
                 }
             )
         })
