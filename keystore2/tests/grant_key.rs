@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
-    generate_ec_key_and_grant_to_users, perform_sample_sign_operation,
-};
+use crate::test_utils::{generate_ec_key_and_grant_to_users, perform_sample_sign_operation};
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Digest::Digest, KeyPurpose::KeyPurpose,
 };
@@ -29,7 +27,7 @@ use keystore2_test_utils::{
     run_as, SecLevel,
 };
 use nix::unistd::getuid;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 static USER_MANAGER_SERVICE_NAME: &str = "android.security.maintenance";
 
@@ -926,7 +924,7 @@ fn ungrant_deleted_app_key_fails() {
             Some(alias),
             None,
         );
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "unexpected failure {result:?}");
 
         grant_key.nspace
     };

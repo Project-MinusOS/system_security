@@ -1,0 +1,21 @@
+# Note that Cargo is not an officially supported build tool (Android's Soong is the official
+# tool).  This Cargo.toml file is included purely for the convenience of developers.
+
+[package]
+name = "prng-seeder-client"
+version = "0.1.0"
+authors = ["David Drysdale <drysdale@google.com>"]
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0.99"
+clap = { version = "4.5.54", features = [ "derive", "error-context", "help", "std", "string", "usage" ] }
+env_logger = "0.10.2"
+hex = "0.4.3"
+logger = "0.1.0"
+log = "0.4.29"
+nix = { version = "0.29.0", features = [ "event", "feature", "fs", "inotify", "ioctl", "memoffset", "mman", "mount", "net", "poll", "process", "resource", "sched", "signal", "socket", "term", "time", "uio", "user" ] }
+
+[patch.crates-io]
+logger = { path = "../../../logging/rust" }

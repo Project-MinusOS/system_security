@@ -24,7 +24,8 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     Algorithm::Algorithm, BlockMode::BlockMode, Digest::Digest, EcCurve::EcCurve,
     ErrorCode::ErrorCode, HardwareAuthenticatorType::HardwareAuthenticatorType,
     KeyOrigin::KeyOrigin, KeyParameter::KeyParameter, KeyParameterValue::KeyParameterValue,
-    KeyPurpose::KeyPurpose, PaddingMode::PaddingMode, SecurityLevel::SecurityLevel, Tag::Tag,
+    KeyPurpose::KeyPurpose, MlDsaVariant::MlDsaVariant, PaddingMode::PaddingMode,
+    SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_system_keystore2::aidl::android::system::keystore2::{
     AuthenticatorSpec::AuthenticatorSpec, Authorization::Authorization,
@@ -55,6 +56,8 @@ const TEE_KEYMINT_RKP_ONLY: &str = "remote_provisioning.tee.rkp_only";
 
 const STRONGBOX_KEYMINT_RKP_ONLY: &str = "remote_provisioning.strongbox.rkp_only";
 
+const GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL: i32 = 202604;
+
 /// Allowed tags in generated/imported key authorizations.
 /// See hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/Tag.aidl for the
 /// list feature tags.
@@ -79,6 +82,7 @@ pub const ALLOWED_TAGS_IN_KEY_AUTHS: &[Tag] = &[
     Tag::MAX_BOOT_LEVEL,
     Tag::MAX_USES_PER_BOOT,
     Tag::MIN_MAC_LENGTH,
+    Tag::ML_DSA_VARIANT,
     Tag::NO_AUTH_REQUIRED,
     Tag::ORIGIN,
     Tag::ORIGINATION_EXPIRE_DATETIME,
@@ -419,7 +423,7 @@ macro_rules! expect_km_error {
 /// Get the value of the given system property, if the given system property doesn't exist
 /// then returns an empty byte vector.
 pub fn get_system_prop(name: &str) -> Vec<u8> {
-    match rustutils::system_properties::read(name) {
+    match rustutils::android::system_properties::read(name) {
         Ok(Some(value)) => value.as_bytes().to_vec(),
         _ => vec![],
     }
@@ -431,15 +435,52 @@ pub fn is_gsi() -> bool {
     PathBuf::from("/system/system_ext/etc/init/init.gsi.rc").as_path().is_file()
 }
 
+/// Get the given system property value as integer.
+pub fn get_integer_system_prop(name: &str) -> Option<i32> {
+    let val = get_system_prop(name);
+    if val.is_empty() {
+        return None;
+    }
+    let val = std::str::from_utf8(&val).ok()?;
+    val.parse::<i32>().ok()
+}
+
+/// Determines VSR API Level.
+pub fn get_vsr_api_level() -> i32 {
+    if let Some(api_level) = get_integer_system_prop("ro.vendor.api_level") {
+        return api_level;
+    }
+
+    let vendor_api_level = get_integer_system_prop("ro.board.api_level")
+        .or_else(|| get_integer_system_prop("ro.board.first_api_level"));
+    let product_api_level = get_integer_system_prop("ro.product.first_api_level")
+        .or_else(|| get_integer_system_prop("ro.build.version.sdk"));
+
+    match (vendor_api_level, product_api_level) {
+        (Some(v), Some(p)) => std::cmp::min(v, p),
+        (Some(v), None) => v,
+        (None, Some(p)) => p,
+        _ => panic!("Could not determine VSR API level"),
+    }
+}
+
 /// Determines whether the test is on a GSI build where the rkp-only status of the device is
-/// unknown. GSI replaces the values for remote_prov_prop properties (since they’re
+/// unknown.
+/// BEFORE 26Q2: GSI replaces the values for remote_prov_prop properties (since they’re
 /// system_internal_prop properties), so on GSI the properties are not reliable indicators of
-/// whether StrongBox/TEE is RKP-only or not.
+/// whether StrongBox/TEE is RKP-only or not. Vendor code cannot set appropriate RKP properties
+/// prior to GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL (26Q2).
+/// 26Q2 ONWARD: CL ag/37165459 allows vendor init to set the remote provisioning
+/// properties. This change enables Remote Key Provisioning (RKP) functionality on GSI.
 pub fn is_rkp_only_unknown_on_gsi(sec_level: SecurityLevel) -> bool {
     if sec_level == SecurityLevel::TRUSTED_ENVIRONMENT {
-        is_gsi() && get_system_prop(TEE_KEYMINT_RKP_ONLY).is_empty()
+        is_gsi()
+            && get_vsr_api_level() < GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL
+            && get_system_prop(TEE_KEYMINT_RKP_ONLY).is_empty()
     } else {
-        is_gsi() && get_system_prop(STRONGBOX_KEYMINT_RKP_ONLY).is_empty()
+        is_gsi()
+            && get_vsr_api_level() < GSI_RKP_PROP_REQUIRED_VENDOR_API_LEVEL
+            && get_system_prop(STRONGBOX_KEYMINT_RKP_ONLY).is_empty()
     }
 }
 
@@ -566,7 +607,7 @@ fn check_common_auths(
         &KeyParameter {
             tag: Tag::USER_ID,
             value: KeyParameterValue::Integer(
-                rustutils::users::multiuser_get_user_id(ThreadState::get_calling_uid())
+                rustutils::android::users::multiuser_get_user_id(ThreadState::get_calling_uid())
                     .try_into()
                     .unwrap()
             )
@@ -680,28 +721,74 @@ pub fn generate_ec_key(
         .purpose(KeyPurpose::VERIFY)
         .digest(digest)
         .ec_curve(ec_curve);
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
+    generate_asymmetric_key(sl, &descriptor, &gen_params)
+}
 
-    let key_metadata = sl.binder.generateKey(
-        &KeyDescriptor { domain, nspace, alias, blob: None },
-        None,
-        &gen_params,
-        0,
-        b"entropy",
-    )?;
+fn generate_asymmetric_key(
+    sl: &SecLevel,
+    descriptor: &KeyDescriptor,
+    gen_params: &[KeyParameter],
+) -> binder::Result<KeyMetadata> {
+    let key_metadata = sl.binder.generateKey(descriptor, None, gen_params, 0, b"entropy")?;
 
     // Must have a public key.
     assert!(key_metadata.certificate.is_some());
 
-    // Should not have an attestation record.
-    assert!(key_metadata.certificateChain.is_none());
+    if gen_params.iter().any(|kp| matches!(kp.tag, Tag::ATTESTATION_CHALLENGE)) {
+        // Should have an attestation record.
+        assert!(key_metadata.certificateChain.is_some());
+    } else {
+        // Should not have an attestation record.
+        assert!(key_metadata.certificateChain.is_none());
+    }
 
-    if domain == Domain::BLOB {
+    if descriptor.domain == Domain::BLOB {
         assert!(key_metadata.key.blob.is_some());
     } else {
         assert!(key_metadata.key.blob.is_none());
     }
-    check_key_authorizations(sl, &key_metadata.authorizations, &gen_params, KeyOrigin::GENERATED);
+    check_key_authorizations(sl, &key_metadata.authorizations, gen_params, KeyOrigin::GENERATED);
     Ok(key_metadata)
+}
+
+/// Generate ML-DSA signing key.
+pub fn generate_mldsa_key(
+    sl: &SecLevel,
+    domain: Domain,
+    nspace: i64,
+    alias: Option<String>,
+    variant: MlDsaVariant,
+) -> binder::Result<KeyMetadata> {
+    let gen_params = AuthSetBuilder::new()
+        .no_auth_required()
+        .algorithm(Algorithm::ML_DSA)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::NONE)
+        .mldsa_variant(variant);
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
+    generate_asymmetric_key(sl, &descriptor, &gen_params)
+}
+
+/// Generate attested ML-DSA signing key.
+pub fn generate_attested_mldsa_key(
+    sl: &SecLevel,
+    domain: Domain,
+    nspace: i64,
+    alias: Option<String>,
+    variant: MlDsaVariant,
+) -> binder::Result<KeyMetadata> {
+    let gen_params = AuthSetBuilder::new()
+        .no_auth_required()
+        .algorithm(Algorithm::ML_DSA)
+        .purpose(KeyPurpose::SIGN)
+        .purpose(KeyPurpose::VERIFY)
+        .digest(Digest::NONE)
+        .mldsa_variant(variant)
+        .attestation_challenge(b"challenge".to_vec());
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
+    generate_asymmetric_key(sl, &descriptor, &gen_params)
 }
 
 /// Generate a RSA key with the given key parameters, alias, domain and namespace.
@@ -737,30 +824,26 @@ pub fn generate_rsa_key(
     if let Some(value) = &key_params.att_challenge {
         gen_params = gen_params.attestation_challenge(value.to_vec())
     }
+    let descriptor = KeyDescriptor { domain, nspace, alias, blob: None };
 
-    let key_metadata = match sl.binder.generateKey(
-        &KeyDescriptor { domain, nspace, alias, blob: None },
-        attest_key,
-        &gen_params,
-        0,
-        b"entropy",
-    ) {
-        Ok(metadata) => metadata,
-        Err(e) => {
-            return if is_rkp_only_unknown_on_gsi(sl.level)
-                && e.service_specific_error() == ErrorCode::ATTESTATION_KEYS_NOT_PROVISIONED.0
-            {
-                // GSI replaces the values for remote_prov_prop properties (since they’re
-                // system_internal_prop properties), so on GSI the properties are not
-                // reliable indicators of whether StrongBox/TEE are RKP-only or not.
-                // Test can be skipped if it generates a key with attestation but doesn't provide
-                // an ATTEST_KEY and rkp-only property is undetermined.
-                Ok(None)
-            } else {
-                Err(e)
-            };
-        }
-    };
+    let key_metadata =
+        match sl.binder.generateKey(&descriptor, attest_key, &gen_params, 0, b"entropy") {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                return if is_rkp_only_unknown_on_gsi(sl.level)
+                    && e.service_specific_error() == ErrorCode::ATTESTATION_KEYS_NOT_PROVISIONED.0
+                {
+                    // GSI replaces the values for remote_prov_prop properties (since they’re
+                    // system_internal_prop properties), so on GSI the properties are not
+                    // reliable indicators of whether StrongBox/TEE are RKP-only or not.
+                    // Test can be skipped if it generates a key with attestation but doesn't provide
+                    // an ATTEST_KEY and rkp-only property is undetermined.
+                    Ok(None)
+                } else {
+                    Err(e)
+                };
+            }
+        };
 
     // Must have a public key.
     assert!(key_metadata.certificate.is_some());
@@ -981,6 +1064,7 @@ pub fn generate_ec_256_attested_key(
     alias: Option<String>,
     att_challenge: &[u8],
     attest_key: &KeyDescriptor,
+    extra_tags: Option<AuthSetBuilder>,
 ) -> binder::Result<KeyMetadata> {
     let ec_gen_params = AuthSetBuilder::new()
         .no_auth_required()
@@ -991,12 +1075,17 @@ pub fn generate_ec_256_attested_key(
         .ec_curve(EcCurve::P_256)
         .attestation_challenge(att_challenge.to_vec());
 
+    let mut params = ec_gen_params.to_vec();
+    if let Some(tags) = extra_tags {
+        params.extend_from_slice(&tags);
+    }
+
     let ec_key_metadata = sl
         .binder
         .generateKey(
             &KeyDescriptor { domain: Domain::APP, nspace: -1, alias, blob: None },
             Some(attest_key),
-            &ec_gen_params,
+            &params,
             0,
             b"entropy",
         )

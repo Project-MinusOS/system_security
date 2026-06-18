@@ -35,4 +35,8 @@ enum AtomID {
 
     // Atoms defined as extensions of the Atom proto message.
     KEYS_PER_UID = 10248,
+    KEY_CREATION_PER_UID = 10267,
+    KEY_OPERATION_PER_UID = 10268,
+    OPERATION_LATENCY = 10270,
+    KEY_OPERATION_STREAMING_STATS = 10271,
 }

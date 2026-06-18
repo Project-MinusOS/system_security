@@ -32,9 +32,14 @@ rust_fuzz {
         fuzz_on_haiku_device: true,
         fuzz_on_haiku_host: false,
         cc: [
-            "android-media-fuzzing-reports@google.com",
+            "cvlasov@google.com",
+            "kwadhera@google.com",
         ],
-        componentid: 155276,
+        componentid: 1084732,
+        hotlists: [
+            "3422133",
+            "4593311",
+        ],
     },
 }
 
@@ -55,11 +60,11 @@ rust_fuzz {
         fuzz_on_haiku_device: true,
         fuzz_on_haiku_host: false,
         cc: [
-            "android-media-fuzzing-reports@google.com",
             "smoreland@google.com",
             "waghpawan@google.com",
         ],
         // Adds bugs to hotlist "AIDL fuzzers bugs" on buganizer
         hotlists: ["4637097"],
+        componentid: 32456,
     },
 }

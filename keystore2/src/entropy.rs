@@ -12,18 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module holds functionality for retrieving and distributing entropy.
+//! This module holds functionality for retrieving and distributing entropy to
+//! IKeyMintDevice instances.
 
+use crate::security_level_manager;
+use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
+    IKeyMintDevice::IKeyMintDevice, SecurityLevel::SecurityLevel,
+};
 use anyhow::{Context, Result};
+use binder::Strong;
 use log::error;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 static ENTROPY_SIZE: usize = 64;
-static MIN_FEED_INTERVAL_SECS: u64 = 30;
+static MIN_FEED_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct FeederInfo {
-    last_feed: Option<Instant>,
+    last_feed: HashMap<SecurityLevel, Instant>,
 }
 
 /// Register the entropy feeder as an idle callback.
@@ -31,41 +38,57 @@ pub fn register_feeder() {
     crate::globals::ASYNC_TASK.add_idle(|shelf| {
         let info = shelf.get_mut::<FeederInfo>();
         let now = Instant::now();
-        let feed_needed = match info.last_feed {
-            None => true,
-            Some(last) => now.duration_since(last) > Duration::from_secs(MIN_FEED_INTERVAL_SECS),
+        let km_devs = crate::globals::get_keymint_devices();
+
+        let devices_to_feed: Vec<(&Strong<dyn IKeyMintDevice>, SecurityLevel)> = km_devs
+            .iter()
+            .filter_map(|(device, security_level)| {
+                let feed_interval_passed = match info.last_feed.get(security_level) {
+                    None => true,
+                    Some(last) => now.duration_since(*last) > MIN_FEED_INTERVAL,
+                };
+                if feed_interval_passed
+                    && security_level_manager::was_operation_performed(*security_level)
+                {
+                    Some((device, *security_level))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if devices_to_feed.is_empty() {
+            return;
+        }
+
+        let data = match get_entropy(devices_to_feed.len() * ENTROPY_SIZE) {
+            Ok(data) => data,
+            Err(e) => {
+                error!(
+                    "Failed to retrieve {}*{} bytes of entropy: {:?}",
+                    devices_to_feed.len(),
+                    ENTROPY_SIZE,
+                    e
+                );
+                return;
+            }
         };
-        if feed_needed {
-            info.last_feed = Some(now);
-            feed_devices();
+
+        for (i, (km_dev, security_level)) in devices_to_feed.iter().enumerate() {
+            let offset = i * ENTROPY_SIZE;
+            let sub_data = &data[offset..(offset + ENTROPY_SIZE)];
+            if let Err(e) = km_dev.addRngEntropy(sub_data) {
+                error!("Failed to feed entropy to KeyMint device: {e:?}");
+            } else {
+                security_level_manager::reset(*security_level);
+                info.last_feed.insert(*security_level, now);
+            }
         }
     });
 }
 
 fn get_entropy(size: usize) -> Result<Vec<u8>> {
     keystore2_crypto::generate_random_data(size).context("Retrieving entropy for KeyMint device")
-}
-
-/// Feed entropy to all known KeyMint devices.
-pub fn feed_devices() {
-    let km_devs = crate::globals::get_keymint_devices();
-    if km_devs.is_empty() {
-        return;
-    }
-    let data = match get_entropy(km_devs.len() * ENTROPY_SIZE) {
-        Ok(data) => data,
-        Err(e) => {
-            error!("Failed to retrieve {}*{ENTROPY_SIZE} bytes of entropy: {e:?}", km_devs.len());
-            return;
-        }
-    };
-    for (i, km_dev) in km_devs.iter().enumerate() {
-        let offset = i * ENTROPY_SIZE;
-        let sub_data = &data[offset..(offset + ENTROPY_SIZE)];
-        if let Err(e) = km_dev.addRngEntropy(sub_data) {
-            error!("Failed to feed entropy to KeyMint device: {e:?}");
-        }
-    }
 }
 
 #[cfg(test)]

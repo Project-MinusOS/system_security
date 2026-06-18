@@ -16,8 +16,8 @@
 //! in the android.security.apc AIDL spec.
 
 use crate::error::anyhow_error_to_cstring;
-use crate::ks_err;
 use crate::utils::{compat_2_response_code, ui_opts_2_compat, watchdog as wd, AppUid};
+use crate::{ks_err, log_client_err};
 use android_security_apc::aidl::android::security::apc::{
     IConfirmationCallback::IConfirmationCallback,
     IProtectedConfirmation::{BnProtectedConfirmation, IProtectedConfirmation},
@@ -80,7 +80,7 @@ impl Error {
 ///
 /// All non `Error` error conditions get mapped onto ResponseCode::SYSTEM_ERROR`.
 pub fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
-    error!("{e:#?}");
+    log_client_err!(e);
     let root_cause = e.root_cause();
     let rc = match root_cause.downcast_ref::<Error>() {
         Some(Error::Rc(rcode)) => rcode.0,

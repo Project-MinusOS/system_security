@@ -45,7 +45,7 @@ use keystore2_crypto::{
     AES_256_KEY_LENGTH,
 };
 use log::{error, info, warn};
-use rustutils::system_properties::PropertyWatcher;
+use rustutils::android::system_properties::PropertyWatcher;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -331,8 +331,9 @@ impl SuperKeyManager {
             .context(ks_err!("PropertyWatcher::new failed"))?;
         loop {
             let level = w
-                .read(|_n, v| v.parse::<usize>().map_err(std::convert::Into::into).map(BootLevel))
-                .context(ks_err!("read of property failed"))?;
+                .read(|_n, v| v.parse::<usize>().map(BootLevel))
+                .context(ks_err!("read of property failed"))?
+                .context(ks_err!("parsing keystore.boot_level failed"))?;
 
             // This scope limits the skm_guard life, so we don't hold the skm_guard while
             // waiting.

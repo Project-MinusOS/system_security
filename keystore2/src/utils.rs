@@ -49,7 +49,9 @@ use keystore2_apc_compat::{
 };
 use keystore2_crypto::{aes_gcm_decrypt, aes_gcm_encrypt, ZVec};
 use log::{debug, error, info, warn};
-use packagemanager_aidl::aidl::android::content::pm::IPackageManagerNative::IPackageManagerNative;
+use packagemanager_aidl::aidl::android::content::pm::IPackageManagerNative::{
+    IPackageManagerNative, LOCATION_SYSTEM,
+};
 use std::iter::IntoIterator;
 use std::thread::sleep;
 use std::time::Duration;
@@ -79,7 +81,7 @@ pub struct AppUid(pub i64);
 impl AppUid {
     /// Return the user/human profile user ID corresponding to this uid.
     pub fn owning_user(&self) -> AndroidUserId {
-        AndroidUserId(rustutils::users::multiuser_get_user_id(self.0 as u32) as i32)
+        AndroidUserId(rustutils::android::users::multiuser_get_user_id(self.0 as u32) as i32)
     }
 
     /// Get the calling uid for the current thread.
@@ -89,7 +91,7 @@ impl AppUid {
 }
 
 /// Uid for the system.
-pub const AID_SYSTEM: AppUid = AppUid(rustutils::users::AID_SYSTEM as i64);
+pub const AID_SYSTEM: AppUid = AppUid(rustutils::android::users::AID_SYSTEM as i64);
 
 /// A secure user ID ("sid") corresponding to an `AndroidUserId` that has been registered with a
 /// secure authenticator instance.
@@ -173,6 +175,11 @@ pub fn is_device_id_attestation_tag(tag: Tag) -> bool {
             | Tag::DEVICE_UNIQUE_ATTESTATION
             | Tag::ATTESTATION_ID_SECOND_IMEI
     )
+}
+
+/// This function checks whether a given tag corresponds to the access of any IMEI attestation.
+pub fn is_imei_attestation_tag(tag: Tag) -> bool {
+    matches!(tag, Tag::ATTESTATION_ID_IMEI | Tag::ATTESTATION_ID_SECOND_IMEI)
 }
 
 /// This function checks whether the calling app has the Android permissions needed to attest device
@@ -539,11 +546,11 @@ pub fn ui_opts_2_compat(opt: i32) -> ApcCompatUiOptions {
 }
 
 /// AID offset for uid space partitioning.
-pub const AID_USER_OFFSET: u32 = rustutils::users::AID_USER_OFFSET;
+pub const AID_USER_OFFSET: u32 = rustutils::android::users::AID_USER_OFFSET;
 
 /// AID of the keystore process itself, used for keys that
 /// keystore generates for its own use.
-pub const AID_KEYSTORE: AppUid = AppUid(rustutils::users::AID_KEYSTORE as i64);
+pub const AID_KEYSTORE: AppUid = AppUid(rustutils::android::users::AID_KEYSTORE as i64);
 
 /// Merges and filters two lists of key descriptors. The first input list, legacy_descriptors,
 /// is assumed to not be sorted or filtered. As such, all key descriptors in that list whose
@@ -669,7 +676,7 @@ pub fn count_key_entries(db: &mut KeystoreDB, domain: Domain, namespace: i64) ->
 pub fn log_security_safe_params(params: &[KmKeyParameter]) -> Vec<KmKeyParameter> {
     params
         .iter()
-        .filter(|kp| (kp.tag != Tag::APPLICATION_ID && kp.tag != Tag::APPLICATION_DATA))
+        .filter(|kp| kp.tag != Tag::APPLICATION_ID && kp.tag != Tag::APPLICATION_DATA)
         .cloned()
         .collect::<Vec<KmKeyParameter>>()
 }
@@ -733,15 +740,30 @@ pub(crate) fn retry_get_interface<T: FromIBinder + ?Sized>(
     }
 }
 
-/// Return the target SDK version for a given app.
+/// Information about a specific app.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppInfo {
+    /// The target SDK for the app, if known.
+    ///
+    /// If a uid corresponds to multiple packages, this will be the lowest value across those
+    /// packages.
+    pub target_sdk: Option<i32>,
+    /// Whether the app is a system app.
+    ///
+    /// If a uid corresponds to multiple packages, this will be true if any of those packages
+    /// are system apps.
+    pub is_system_app: bool,
+}
+
+/// Return information about the given app.
 ///
 /// Involves round-trips to PackageManager.
-pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
+pub fn app_info_for_uid(uid: AppUid) -> AppInfo {
     let pm: Strong<dyn IPackageManagerNative> = match binder::get_interface("package_native") {
         Ok(pm) => pm,
         Err(e) => {
             warn!("failed to connect to PackageManager: {e:?}");
-            return None;
+            return AppInfo::default();
         }
     };
 
@@ -749,15 +771,15 @@ pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
         Ok(Some(infos)) => infos,
         Ok(None) => {
             warn!("no package info for {uid:?}");
-            return None;
+            return AppInfo::default();
         }
         Err(e) => {
             warn!("failed to get package info for {uid:?}: {e:?}");
-            return None;
+            return AppInfo::default();
         }
     };
 
-    let mut lowest_target_sdk = None;
+    let mut app_info = AppInfo::default();
     for pkg_info in pkg_infos {
         let Some(pkg_info) = pkg_info else {
             continue;
@@ -767,29 +789,93 @@ pub fn target_sdk_for_uid(uid: AppUid) -> Option<i32> {
             continue;
         }
         match pm.getTargetSdkVersionForPackage(pkg_name) {
-            Err(e) => {
-                warn!("failed to get target SDK version for {uid:?} '{pkg_name}': {e:?}");
-                continue;
-            }
+            Err(e) => warn!("failed to get target SDK version for {uid:?} '{pkg_name}': {e:?}"),
             Ok(target_sdk) if target_sdk <= 0 => {
                 warn!("unexpected target SDK version {target_sdk} for {uid:?} '{pkg_name}'");
-                continue;
             }
             Ok(target_sdk) => {
-                info!("{uid:?} '{pkg_name}' has target SDK {target_sdk:?}");
-                if let Some(prev_lowest) = lowest_target_sdk {
+                if let Some(prev_lowest) = app_info.target_sdk {
                     if target_sdk < prev_lowest {
-                        lowest_target_sdk = Some(target_sdk);
+                        app_info.target_sdk = Some(target_sdk);
                     }
                 } else {
-                    lowest_target_sdk = Some(target_sdk);
+                    app_info.target_sdk = Some(target_sdk);
                 }
             }
-        };
+        }
+        if !app_info.is_system_app {
+            match pm.getLocationFlags(pkg_name) {
+                Err(e) => warn!("failed to get location flags for {uid:?} '{pkg_name}': {e:?}"),
+                Ok(flags) => {
+                    if flags & LOCATION_SYSTEM != 0 {
+                        app_info.is_system_app = true;
+                    }
+                }
+            }
+        }
     }
 
-    info!("{uid:?} has target SDK {lowest_target_sdk:?}");
-    lowest_target_sdk
+    info!("{uid:?} has {app_info:?}");
+    app_info
+}
+
+/// Clear the current thread's `errno` value.
+fn errno_clear() {
+    // SAFETY: Writes to the thread's errno address should never fail
+    unsafe { *libc::__errno() = 0 }
+}
+
+/// Return the current thread's `errno` value.
+fn errno_read() -> libc::c_int {
+    // SAFETY: Reads from the thread's errno address should never fail
+    unsafe { *libc::__errno() }
+}
+
+/// A safe wrapper around [`libc::getpriority()`] for the current thread.
+///
+/// See: `man getpriority`
+fn getpriority() -> Option<libc::c_int> {
+    errno_clear();
+
+    // SAFETY: `errno` is cleared before calling the function and checked upon return.
+    let result = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+
+    let errno = errno_read();
+    if errno == 0 {
+        Some(result)
+    } else {
+        warn!("getpriority() failed (errno={errno})");
+        None
+    }
+}
+
+/// A best-effort safe wrapper around [`libc::setpriority()`] for the current thread.
+/// Failures are logged but not returned.
+///
+/// See: `man setpriority`
+fn setpriority(prio: libc::c_int) {
+    errno_clear();
+
+    // SAFETY: `setpriority` doesn't take pointers; `errno` is cleared before calling and checked
+    // upon return.
+    let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, prio) };
+    if result != 0 {
+        let errno = errno_read();
+        warn!("setpriority() failed (errno={errno})");
+    }
+}
+
+/// Set the priority of the current thread, but only if the thread's current priority
+/// is worse (has a higher numeric value, which means it is nicer to other threads).
+///
+/// This is best-effort and non-atomic; it does not attempt to cope with other threads
+/// changing the current thread's priority in between get and set.
+pub fn self_renice(niceness: i32) {
+    let Some(current) = getpriority() else { return };
+    if current > niceness {
+        info!("setting niceness {niceness} from current {current}");
+        setpriority(niceness)
+    }
 }
 
 /// Enable logging in unit tests.
@@ -799,5 +885,13 @@ pub fn init_test_logging() {
         android_logger::Config::default()
             .with_tag("keystore2_test")
             .with_max_level(log::LevelFilter::Debug),
+    );
+}
+
+/// Enable logging in unit tests at a specific level
+#[cfg(test)]
+pub fn init_test_logging_at(max_level: log::LevelFilter) {
+    android_logger::init_once(
+        android_logger::Config::default().with_tag("keystore2_test").with_max_level(max_level),
     );
 }

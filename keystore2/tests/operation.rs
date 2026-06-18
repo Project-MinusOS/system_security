@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
+use crate::test_utils::{
     create_signing_operation, delete_app_key, delete_key, execute_op_run_as_child,
     perform_sample_sign_operation, BarrierReached, ForcedOp, TestOutcome,
 };
@@ -27,7 +27,7 @@ use keystore2_test_utils::{
     authorizations, key_generations, key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::{getuid, Gid, Uid};
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -547,7 +547,7 @@ fn keystore2_op_abort_success_test() {
     let op: binder::Strong<dyn IKeystoreOperation> = op_response.iOperation.unwrap();
     op.update(b"my message").unwrap();
     let result = key_generations::map_ks_error(op.abort());
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "unexpected failure {result:?}");
 
     // Try to use the op handle after abort.
     let result = key_generations::map_ks_error(op.finish(None, None));

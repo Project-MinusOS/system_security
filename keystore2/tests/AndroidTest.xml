@@ -15,6 +15,12 @@
 -->
 <configuration description="Config to run keystore2_client_tests device tests.">
 
+    <target_preparer class="com.android.tradefed.targetprep.RunCommandTargetPreparer">
+        <!-- keystore2_client_tests requires wifi -->
+        <option name="run-command" value="settings put global wifi_on 1" />
+        <option name="run-command" value="svc wifi enable" />
+    </target_preparer>
+
     <target_preparer class="com.android.tradefed.targetprep.RootTargetPreparer">
     </target_preparer>
 

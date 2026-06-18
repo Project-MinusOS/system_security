@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
-    delete_app_key, execute_op_run_as_child, get_vsr_api_level, perform_sample_sign_operation,
-    BarrierReached, ForcedOp, TestOutcome,
+use crate::test_utils::{
+    delete_app_key, execute_op_run_as_child, perform_sample_sign_operation, BarrierReached,
+    ForcedOp, TestOutcome,
 };
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, Digest::Digest, EcCurve::EcCurve, ErrorCode::ErrorCode,
@@ -25,10 +25,11 @@ use android_system_keystore2::aidl::android::system::keystore2::{
     ResponseCode::ResponseCode,
 };
 use keystore2_test_utils::{
-    authorizations, get_keystore_service, key_generations, key_generations::Error, run_as, SecLevel,
+    authorizations, get_keystore_service, key_generations, key_generations::get_vsr_api_level,
+    key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::{getuid, Gid, Uid};
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 macro_rules! test_ec_sign_key_op_success {
     ( $test_name:ident, $digest:expr, $ec_curve:expr ) => {
@@ -116,7 +117,10 @@ fn perform_ec_sign_key_op_with_none_or_md5_digest(alias: &str, digest: Digest, e
         }
         Err(e) => {
             assert_eq!(e, Error::Km(ErrorCode::UNSUPPORTED_DIGEST));
-            assert!(digest == Digest::NONE || digest == Digest::MD5);
+            assert!(
+                digest == Digest::NONE || digest == Digest::MD5,
+                "unexpected digest {digest:?}"
+            );
         }
     }
 
@@ -261,10 +265,13 @@ fn keystore2_generate_ec_key_missing_curve() {
     ));
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        Error::Km(ErrorCode::UNSUPPORTED_EC_CURVE) | Error::Km(ErrorCode::UNSUPPORTED_KEY_SIZE)
-    ));
+    assert!(
+        matches!(
+            err,
+            Error::Km(ErrorCode::UNSUPPORTED_EC_CURVE) | Error::Km(ErrorCode::UNSUPPORTED_KEY_SIZE)
+        ),
+        "unexpected error {err:?}"
+    );
 }
 
 /// Try to generate a EC key with curve `CURVE_25519` having `SIGN and AGREE_KEY` purposes.
@@ -281,7 +288,7 @@ fn keystore2_generate_ec_key_25519_multi_purpose() {
         .ec_curve(EcCurve::CURVE_25519)
         .purpose(KeyPurpose::SIGN)
         .purpose(KeyPurpose::AGREE_KEY)
-        .digest(Digest::SHA_2_256);
+        .digest(Digest::NONE);
 
     let result = key_generations::map_ks_error(sl.binder.generateKey(
         &KeyDescriptor {
@@ -340,6 +347,7 @@ fn keystore2_ec_25519_generate_key_success() {
 /// shouldn't support these digest modes. Test should fail to create operations with an error
 /// `UNSUPPORTED_DIGEST`.
 #[test]
+#[allow(clippy::unnecessary_unwrap)]
 fn keystore2_ec_25519_generate_key_fail() {
     let sl = SecLevel::tee();
 
@@ -354,16 +362,25 @@ fn keystore2_ec_25519_generate_key_fail() {
 
     for digest in digests {
         let alias = format!("ks_ec_25519_test_key_gen_{}{}", getuid(), digest.0);
-        let key_metadata = key_generations::generate_ec_key(
+        let gen_key_result = key_generations::map_ks_error(key_generations::generate_ec_key(
             &sl,
             Domain::APP,
             -1,
             Some(alias.to_string()),
             EcCurve::CURVE_25519,
             digest,
-        )
-        .unwrap();
+        ));
 
+        if gen_key_result.is_err() && get_vsr_api_level() <= 33 {
+            // Compatibility error on older devices (Android 13 and earlier).
+            // Older implementations allowed the generation of an EC key with CURVE_25519
+            // only when using digest mode NONE. Any other digest value fails with an
+            // INVALID_ARGUMENT error.
+            assert_eq!(Error::Km(ErrorCode::INVALID_ARGUMENT), gen_key_result.unwrap_err());
+            continue;
+        }
+
+        let key_metadata = gen_key_result.unwrap();
         // The KeyMint v2 API added `CURVE_25519` and specified that "Ed25519 keys only support
         // Digest::NONE".  However, this was not checked at the time so we can only be strict about
         // checking this for more recent implementations.

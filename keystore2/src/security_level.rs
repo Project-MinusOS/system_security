@@ -25,15 +25,18 @@ use crate::error::{
 use crate::globals::{
     get_remotely_provisioned_component_name, DB, ENFORCEMENTS, LEGACY_IMPORTER, SUPER_KEY,
 };
-use crate::key_parameter::KeyParameter as KsKeyParam;
 use crate::key_parameter::KeyParameterValue as KsKeyParamValue;
+use crate::key_parameter::{KeyParameter as KsKeyParam, KmKeyParameter};
 use crate::ks_err;
-use crate::metrics_store::log_key_creation_event_stats;
+use crate::metrics_store::{
+    log_key_creation_event_stats, log_operation_latency, parse_key_parameters,
+};
 use crate::remote_provisioning::RemProvState;
+use crate::security_level_manager;
 use crate::super_key::{KeyBlob, SuperKeyManager};
 use crate::utils::{
-    check_device_attestation_permissions, check_key_permission,
-    check_unique_id_attestation_permissions, is_device_id_attestation_tag,
+    app_info_for_uid, check_device_attestation_permissions, check_key_permission,
+    check_unique_id_attestation_permissions, count_key_entries, is_device_id_attestation_tag,
     key_characteristics_to_internal, log_security_safe_params, watchdog as wd, AndroidUserId,
     AppUid, Challenge, UNDEFINED_NOT_AFTER,
 };
@@ -52,10 +55,11 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
     Algorithm::Algorithm, AttestationKey::AttestationKey, Certificate::Certificate,
     HardwareAuthenticatorType::HardwareAuthenticatorType, IKeyMintDevice::IKeyMintDevice,
     KeyCreationResult::KeyCreationResult, KeyFormat::KeyFormat,
-    KeyMintHardwareInfo::KeyMintHardwareInfo, KeyParameter::KeyParameter,
+    KeyMintHardwareInfo::KeyMintHardwareInfo, KeyOrigin::KeyOrigin, KeyParameter::KeyParameter,
     KeyParameterValue::KeyParameterValue, SecurityLevel::SecurityLevel, Tag::Tag,
 };
 use android_hardware_security_keymint::binder::{BinderFeatures, Strong, ThreadState};
+use android_security_metrics::aidl::android::security::metrics::OperationType::OperationType;
 use android_system_keystore2::aidl::android::system::keystore2::{
     AuthenticatorSpec::AuthenticatorSpec, CreateOperationResponse::CreateOperationResponse,
     Domain::Domain, EphemeralStorageKeyResponse::EphemeralStorageKeyResponse,
@@ -67,9 +71,15 @@ use anyhow::{anyhow, Context, Result};
 use log::error;
 use postprocessor_client::process_certificate_chain;
 use rkpd_client::store_rkpd_attestation_key;
-use rustutils::system_properties::read_bool;
+use rustutils::android::system_properties::read_bool;
 use std::convert::TryInto;
 use std::time::SystemTime;
+
+/// The fallback limit on the number of keys per app.  All apps must stay within this limit.
+const DEFAULT_PER_UID_KEY_LIMIT: i32 = 200_000;
+
+/// The limit on the number of keys per app for apps with a target SDK level of 37+.
+const API_37_PER_UID_KEY_LIMIT: i32 = 50_000;
 
 /// Implementation of the IKeystoreSecurityLevel Interface.
 pub struct KeystoreSecurityLevel {
@@ -237,6 +247,7 @@ impl KeystoreSecurityLevel {
         // so that we can use it by reference like the blob provided by the key descriptor.
         // Otherwise, we would have to clone the blob from the key descriptor.
         let scoping_blob: Vec<u8>;
+        let mut is_attested = false;
         let (km_blob, key_properties, key_id_guard, blob_metadata) = match key.domain {
             Domain::BLOB => {
                 check_key_permission(KeyPerm::Use, key, &None)
@@ -271,7 +282,7 @@ impl KeystoreSecurityLevel {
                             db.borrow_mut().load_key_entry(
                                 key,
                                 KeyType::Client,
-                                KeyEntryLoadBits::KM,
+                                KeyEntryLoadBits::BOTH,
                                 caller_uid,
                                 |k, av| {
                                     check_key_permission(KeyPerm::Use, k, &av)?;
@@ -284,6 +295,8 @@ impl KeystoreSecurityLevel {
                         })
                     })
                     .context(ks_err!("Failed to load key blob."))?;
+
+                is_attested = key_entry.is_attested();
 
                 let (blob, blob_metadata) =
                     key_entry.take_key_blob_info().ok_or_else(Error::sys).context(ks_err!(
@@ -377,13 +390,28 @@ impl KeystoreSecurityLevel {
 
         let op_params: Vec<KeyParameter> = operation_parameters.to_vec();
 
+        let (algorithm, _, _) = if let Some((_, ref props)) = key_properties {
+            let km_props: Vec<KmKeyParameter> =
+                props.iter().map(|kp| kp.clone().into_key_parameter()).collect();
+            parse_key_parameters(&km_props)
+        } else {
+            parse_key_parameters(operation_parameters)
+        };
+
         let operation = match begin_result.operation {
             Some(km_op) => self.operation_db.create_operation(
                 km_op,
                 caller_uid,
                 auth_info,
                 forced,
-                LoggingInfo::new(self.security_level, purpose, op_params, upgraded_blob.is_some()),
+                LoggingInfo::new(
+                    self.security_level,
+                    purpose,
+                    algorithm,
+                    op_params,
+                    upgraded_blob.is_some(),
+                    is_attested,
+                ),
             ),
             None => {
                 return Err(Error::sys()).context(ks_err!(
@@ -470,7 +498,7 @@ impl KeystoreSecurityLevel {
                         .context(ks_err!("Attestation ID retrieval failed."));
                 }
                 Err(e) => {
-                    return Err(anyhow!(e)).context(ks_err!("Attestation ID retrieval error."))
+                    return Err(anyhow!(e)).context(ks_err!("Attestation ID retrieval error."));
                 }
             }
         }
@@ -507,7 +535,11 @@ impl KeystoreSecurityLevel {
         // that NOT_BEFORE and NOT_AFTER are present.
         match params.iter().find(|kp| kp.tag == Tag::ALGORITHM) {
             Some(KeyParameter { tag: _, value: KeyParameterValue::Algorithm(Algorithm::RSA) })
-            | Some(KeyParameter { tag: _, value: KeyParameterValue::Algorithm(Algorithm::EC) }) => {
+            | Some(KeyParameter { tag: _, value: KeyParameterValue::Algorithm(Algorithm::EC) })
+            | Some(KeyParameter {
+                tag: _,
+                value: KeyParameterValue::Algorithm(Algorithm::ML_DSA),
+            }) => {
                 if !params.iter().any(|kp| kp.tag == Tag::CERTIFICATE_NOT_BEFORE) {
                     result.push(KeyParameter {
                         tag: Tag::CERTIFICATE_NOT_BEFORE,
@@ -524,6 +556,129 @@ impl KeystoreSecurityLevel {
             _ => {}
         }
         Ok(result)
+    }
+
+    /// Check whether new key generation should be failed due to excessive per-uid key counts.
+    fn check_key_counts(&self, key: &KeyDescriptor) -> Result<()> {
+        if !keystore2_flags::limit_keys_per_uid() {
+            return Ok(());
+        }
+        if key.domain != Domain::APP {
+            // Only limit app keys.
+            return Ok(());
+        }
+        let uid = AppUid(key.nspace);
+
+        // See how many keys this uid already owns.
+        let Ok(count) =
+            DB.with(|db| count_key_entries(&mut db.borrow_mut(), key.domain, key.nspace))
+        else {
+            // Fail open if we can't count the keys for some reason.
+            error!("failed to count keys for {uid:?}");
+            return Ok(());
+        };
+
+        // The per-uid limits for keys are based on the app's target SDK.
+        // Determining the target SDK involves PackageManager round trips, so only
+        // check target SDK if necessary.
+        if count < API_37_PER_UID_KEY_LIMIT {
+            // Below the lower limit => definitely OK.
+            return Ok(());
+        }
+        let info = app_info_for_uid(uid);
+        let targets_sdk37 = matches!(info.target_sdk, Some(target_sdk) if target_sdk >= 37);
+        let limit = if info.is_system_app {
+            // System apps get the higher limit.
+            DEFAULT_PER_UID_KEY_LIMIT
+        } else if targets_sdk37 {
+            // Apps targeting SDK37+ get the lower limit.
+            API_37_PER_UID_KEY_LIMIT
+        } else {
+            // Everything else gets the default (higher) limit.
+            DEFAULT_PER_UID_KEY_LIMIT
+        };
+
+        if count >= limit {
+            error!("failing key creation for {uid:?} with excessive ({count}) keys",);
+            if targets_sdk37 {
+                // Apps targeting SDK37+ can cope with the new error code.
+                Err(error::Error::Rc(ResponseCode::TOO_MANY_APP_KEYS_SDK37)).context(ks_err!(
+                    "failed key creation as {uid:?} (targeting SDK37+) has too many ({count}) existing keys",
+                ))
+            } else {
+                Err(error::Error::Rc(ResponseCode::TOO_MANY_APP_KEYS)).context(ks_err!(
+                    "failed key creation as {uid:?} has too many ({count}) existing keys",
+                ))
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    // Generates a key and retries with swapped IMEI if an attestation ID mismatch error occurs.
+    // This is a workaround for the fact that KeyMint was not required to support reordering
+    // of IMEIs, even though the OS does not guarantee that the IMEI values are stably ordered.
+    // This method can likely be safely removed in 34q2, once all devices still receiving
+    // updates have KeyMint instances that are guaranteed to support this flexible ordering.
+    fn generate_key_and_retry_on_att_id_mismatch(
+        &self,
+        params: &[KeyParameter],
+        attest_key: Option<&AttestationKey>,
+    ) -> Result<KeyCreationResult, Error> {
+        let result = map_km_error({
+            let _wp = self.watch_millis(
+                "KeystoreSecurityLevel::generate_key: calling IKeyMintDevice::generateKey",
+                5000,
+            );
+            self.keymint.generateKey(params, attest_key)
+        });
+
+        match &result {
+            Err(Error::Km(ErrorCode::CANNOT_ATTEST_IDS))
+            | Err(Error::Km(ErrorCode::INVALID_TAG))
+            | Err(Error::Km(ErrorCode::ATTESTATION_IDS_NOT_PROVISIONED)) => {}
+            _ => {
+                // Not an error we can handle by retrying.
+                return result;
+            }
+        }
+
+        // The aforementioned errors might occur because the IMEI values are in the wrong order
+        // which could only occur on KM instances that support multiple IMEIs in the first place.
+        if self.hw_info.versionNumber < 300
+            || self.hw_info.versionNumber >= 500
+            || !params.iter().any(|p| crate::utils::is_imei_attestation_tag(p.tag))
+        {
+            return result;
+        }
+
+        // Try swapping the IMEI parameters, for those that are present.
+        let swapped_params: Vec<KeyParameter> = params
+            .iter()
+            .map(|p| {
+                let mut new_p = p.clone();
+                match new_p.tag {
+                    Tag::ATTESTATION_ID_IMEI => {
+                        new_p.tag = Tag::ATTESTATION_ID_SECOND_IMEI;
+                    }
+                    Tag::ATTESTATION_ID_SECOND_IMEI => {
+                        new_p.tag = Tag::ATTESTATION_ID_IMEI;
+                    }
+                    _ => {}
+                }
+                new_p
+            })
+            .collect();
+        map_km_error({
+            let _wp = self.watch_millis(
+                concat!(
+                    "KeystoreSecurityLevel::generate_key: calling ",
+                    "IKeyMintDevice::generateKey, (retrying with swapped IMEIs)."
+                ),
+                5000,
+            );
+            self.keymint.generateKey(&swapped_params, attest_key)
+        })
     }
 
     fn generate_key(
@@ -549,6 +704,7 @@ impl KeystoreSecurityLevel {
             },
             _ => key.clone(),
         };
+        self.check_key_counts(&key)?;
 
         // generate_key requires the rebind permission.
         // Must return on error for security reasons.
@@ -591,16 +747,7 @@ impl KeystoreSecurityLevel {
                             attestKeyParams: vec![],
                             issuerSubjectName: issuer_subject.clone(),
                         });
-                        map_km_error({
-                            let _wp = self.watch_millis(
-                                concat!(
-                                    "KeystoreSecurityLevel::generate_key (UserGenerated): ",
-                                    "calling IKeyMintDevice::generate_key"
-                                ),
-                                5000, // Generate can take a little longer.
-                            );
-                            self.keymint.generateKey(&params, attest_key.as_ref())
-                        })
+                        self.generate_key_and_retry_on_att_id_mismatch(&params, attest_key.as_ref())
                     },
                 )
                 .context(ks_err!(
@@ -611,21 +758,15 @@ impl KeystoreSecurityLevel {
                 .map(|(result, _)| result),
             Some(AttestationKeyInfo::RkpdProvisioned { attestation_key, attestation_certs }) => {
                 self.upgrade_rkpd_keyblob_if_required_with(&attestation_key.keyBlob, &[], |blob| {
-                    map_km_error({
-                        let _wp = self.watch_millis(
-                            concat!(
-                                "KeystoreSecurityLevel::generate_key (RkpdProvisioned): ",
-                                "calling IKeyMintDevice::generate_key",
-                            ),
-                            5000, // Generate can take a little longer.
-                        );
-                        let dynamic_attest_key = Some(AttestationKey {
-                            keyBlob: blob.to_vec(),
-                            attestKeyParams: vec![],
-                            issuerSubjectName: attestation_key.issuerSubjectName.clone(),
-                        });
-                        self.keymint.generateKey(&params, dynamic_attest_key.as_ref())
-                    })
+                    let dynamic_attest_key = Some(AttestationKey {
+                        keyBlob: blob.to_vec(),
+                        attestKeyParams: vec![],
+                        issuerSubjectName: attestation_key.issuerSubjectName.clone(),
+                    });
+                    self.generate_key_and_retry_on_att_id_mismatch(
+                        &params,
+                        dynamic_attest_key.as_ref(),
+                    )
                 })
                 .context(ks_err!(
                     "While generating Key {:?} with remote \
@@ -661,17 +802,7 @@ impl KeystoreSecurityLevel {
                     result
                 })
             }
-            None => map_km_error({
-                let _wp = self.watch_millis(
-                    concat!(
-                        "KeystoreSecurityLevel::generate_key (No attestation key): ",
-                        "calling IKeyMintDevice::generate_key",
-                    ),
-                    5000, // Generate can take a little longer.
-                );
-                self.keymint.generateKey(&params, None)
-            })
-            .context(ks_err!(
+            None => self.generate_key_and_retry_on_att_id_mismatch(&params, None).context(ks_err!(
                 "While generating without a provided \
                  attestation key and params: {:?}.",
                 log_security_safe_params(&params)
@@ -706,6 +837,7 @@ impl KeystoreSecurityLevel {
             },
             _ => key.clone(),
         };
+        self.check_key_counts(&key)?;
 
         // import_key requires the rebind permission.
         check_key_permission(KeyPerm::Rebind, &key, &None).context(ks_err!("In import_key."))?;
@@ -724,7 +856,8 @@ impl KeystoreSecurityLevel {
                 | KeyParameterValue::Algorithm(Algorithm::HMAC)
                 | KeyParameterValue::Algorithm(Algorithm::TRIPLE_DES) => Ok(KeyFormat::RAW),
                 KeyParameterValue::Algorithm(Algorithm::RSA)
-                | KeyParameterValue::Algorithm(Algorithm::EC) => Ok(KeyFormat::PKCS8),
+                | KeyParameterValue::Algorithm(Algorithm::EC)
+                | KeyParameterValue::Algorithm(Algorithm::ML_DSA) => Ok(KeyFormat::PKCS8),
                 v => Err(error::Error::Km(ErrorCode::INVALID_ARGUMENT))
                     .context(ks_err!("Unknown Algorithm {:?}.", v)),
             })
@@ -785,6 +918,7 @@ impl KeystoreSecurityLevel {
             },
             _ => panic!("Unreachable."),
         };
+        self.check_key_counts(&key)?;
 
         // Import_wrapped_key requires the rebind permission for the new key.
         check_key_permission(KeyPerm::Rebind, &key, &None).context(ks_err!())?;
@@ -1054,7 +1188,17 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         forced: bool,
     ) -> binder::Result<CreateOperationResponse> {
         let _wp = self.watch("IKeystoreSecurityLevel::createOperation");
-        self.create_operation(key, operation_parameters, forced).map_err(into_logged_binder)
+        security_level_manager::notify_operation_performed(self.security_level);
+        let (latency, result) =
+            crate::timed_call!(self.create_operation(key, operation_parameters, forced));
+        log_operation_latency(
+            OperationType::CREATE_OPERATION,
+            self.security_level,
+            operation_parameters,
+            result.is_ok(),
+            latency,
+        );
+        result.map_err(into_logged_binder)
     }
     fn generateKey(
         &self,
@@ -1067,8 +1211,23 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         // Duration is set to 5 seconds, because generateKey - especially for RSA keys, takes more
         // time than other operations
         let _wp = self.watch_millis("IKeystoreSecurityLevel::generateKey", 5000);
-        let result = self.generate_key(key, attestation_key, params, flags, entropy);
-        log_key_creation_event_stats(self.security_level, params, &result);
+        security_level_manager::notify_operation_performed(self.security_level);
+        let (latency, result) =
+            crate::timed_call!(self.generate_key(key, attestation_key, params, flags, entropy));
+        log_key_creation_event_stats(
+            AppUid::calling().0 as i32,
+            self.security_level,
+            params,
+            KeyOrigin::GENERATED,
+            &result,
+        );
+        log_operation_latency(
+            OperationType::GENERATE_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
+        );
         log_key_generated(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
@@ -1081,8 +1240,23 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         key_data: &[u8],
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importKey");
-        let result = self.import_key(key, attestation_key, params, flags, key_data);
-        log_key_creation_event_stats(self.security_level, params, &result);
+        security_level_manager::notify_operation_performed(self.security_level);
+        let (latency, result) =
+            crate::timed_call!(self.import_key(key, attestation_key, params, flags, key_data));
+        log_key_creation_event_stats(
+            AppUid::calling().0 as i32,
+            self.security_level,
+            params,
+            KeyOrigin::IMPORTED,
+            &result,
+        );
+        log_operation_latency(
+            OperationType::IMPORT_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
+        );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
@@ -1095,9 +1269,28 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         authenticators: &[AuthenticatorSpec],
     ) -> binder::Result<KeyMetadata> {
         let _wp = self.watch("IKeystoreSecurityLevel::importWrappedKey");
-        let result =
-            self.import_wrapped_key(key, wrapping_key, masking_key, params, authenticators);
-        log_key_creation_event_stats(self.security_level, params, &result);
+        security_level_manager::notify_operation_performed(self.security_level);
+        let (latency, result) = crate::timed_call!(self.import_wrapped_key(
+            key,
+            wrapping_key,
+            masking_key,
+            params,
+            authenticators
+        ));
+        log_key_creation_event_stats(
+            AppUid::calling().0 as i32,
+            self.security_level,
+            params,
+            KeyOrigin::SECURELY_IMPORTED,
+            &result,
+        );
+        log_operation_latency(
+            OperationType::IMPORT_WRAPPED_KEY,
+            self.security_level,
+            params,
+            result.is_ok(),
+            latency,
+        );
         log_key_imported(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)
     }
@@ -1106,10 +1299,12 @@ impl IKeystoreSecurityLevel for KeystoreSecurityLevel {
         storage_key: &KeyDescriptor,
     ) -> binder::Result<EphemeralStorageKeyResponse> {
         let _wp = self.watch("IKeystoreSecurityLevel::convertStorageKeyToEphemeral");
+        security_level_manager::notify_operation_performed(self.security_level);
         self.convert_storage_key_to_ephemeral(storage_key).map_err(into_logged_binder)
     }
     fn deleteKey(&self, key: &KeyDescriptor) -> binder::Result<()> {
         let _wp = self.watch("IKeystoreSecurityLevel::deleteKey");
+        security_level_manager::notify_operation_performed(self.security_level);
         let result = self.delete_key(key);
         log_key_deleted(key, ThreadState::get_calling_uid(), result.is_ok());
         result.map_err(into_logged_binder)

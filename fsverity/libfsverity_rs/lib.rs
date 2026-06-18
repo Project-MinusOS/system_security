@@ -59,10 +59,71 @@ pub fn enable(fd: BorrowedFd) -> io::Result<()> {
         sig_ptr: 0,
         __reserved2: [0; 11],
     };
-    // SAFETY: the ioctl doesn't change the sematics in the current process
+    // SAFETY: the ioctl doesn't change the semantics in the current process
     if unsafe { enable_verity(fd.as_raw_fd(), &arg) } == Ok(0) {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+const SHA256_SIZE_BYTES: u16 = 32;
+#[repr(C)]
+struct fsverity_measure_arg_sha256 {
+    digest_algorithm: u16,
+    digest_size: u16,
+    digest: [u8; SHA256_SIZE_BYTES as usize],
+}
+
+impl fsverity_measure_arg_sha256 {
+    fn new() -> Self {
+        Self {
+            digest_algorithm: FS_VERITY_HASH_ALG_SHA256.try_into().unwrap(),
+            digest_size: SHA256_SIZE_BYTES,
+            digest: [0u8; SHA256_SIZE_BYTES as usize],
+        }
+    }
+}
+
+/// Read the sha 256 fs-verity digest from `fd`.
+pub fn read_sha256_digest(fd: BorrowedFd) -> io::Result<[u8; SHA256_SIZE_BYTES as usize]> {
+    let mut arg = fsverity_measure_arg_sha256::new();
+    let arg_ptr = (&mut arg as *mut fsverity_measure_arg_sha256) as *mut fsverity_measure_arg;
+    // SAFETY: buffer is guaranteed to be large enough to fit the digest
+    if unsafe { read_verity_digest(fd.as_raw_fd(), arg_ptr) } == Ok(0) {
+        Ok(arg.digest)
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_enable_verity_and_read_digest() {
+        let mut temp_file = NamedTempFile::new().unwrap_or_else(|e| {
+            panic!("Failed to create temp file: {e}");
+        });
+        assert!(temp_file.write(b"This file will be made read only").is_ok());
+        let (_, file_path) = temp_file.keep().expect("Failed to persist temp file");
+        scopeguard::defer! {
+            if let Err(e) = fs::remove_file(&file_path){
+                eprintln!("Failed to remove {0}:{e}", file_path.display());
+            }
+        }
+        let ro_file = fs::File::open(&file_path).unwrap_or_else(|e| {
+            panic!("Failed to open {0}:{e}", file_path.display());
+        });
+
+        // Enable fs-verity.
+        enable(ro_file.as_fd()).expect("Failed to enable fs-verity");
+        // Read the digest.
+        let _ = read_sha256_digest(ro_file.as_fd()).expect("Failed to read digest");
     }
 }

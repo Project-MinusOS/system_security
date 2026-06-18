@@ -73,8 +73,7 @@ use android_system_keystore2::aidl::android::system::keystore2::{
 };
 use anyhow::{anyhow, Context, Result};
 use keystore2_crypto::ZVec;
-use keystore2_flags;
-use log::{error, info};
+use log::info;
 #[cfg(not(test))]
 use rand::random;
 use rusqlite::{
@@ -760,6 +759,11 @@ impl KeyEntry {
     pub fn pure_cert(&self) -> bool {
         self.pure_cert
     }
+    /// This returns true if the entry corresponds to an attested key.
+    /// A key is considered attested if it has an associated certificate chain.
+    pub fn is_attested(&self) -> bool {
+        self.cert_chain.is_some()
+    }
 }
 
 /// Indicates the sub component of a key entry for persistent storage.
@@ -1199,6 +1203,10 @@ impl KeystoreDB {
         conn.execute("PRAGMA persistent.cache_size = -500;", params![])
             .context("Failed to decrease cache size for persistent db")?;
 
+        log::info!("Setting synchronous=EXTRA");
+        conn.execute("PRAGMA persistent.synchronous = EXTRA;", params![])
+            .context("Failed to set synchronous mode to EXTRA")?;
+
         Ok(conn)
     }
 
@@ -1405,7 +1413,6 @@ impl KeystoreDB {
                 params![SubComponentType::KEY_BLOB, BlobState::Current],
             )
             .context("Trying to purge out-of-date blobs (other than keyblobs)")?;
-
             Ok(vec![]).no_gc()
         })
         .context(ks_err!())
@@ -1424,28 +1431,30 @@ impl KeystoreDB {
     ///
     /// The function also marks any `blobentry` rows that don't have an owning `keyentry` row as
     /// orphaned.
-    pub fn cleanup_leftovers(&mut self) -> Result<usize> {
+    pub fn cleanup_leftovers(&mut self, orphan_limit: usize) -> Result<usize> {
         let _wp = wd::watch("KeystoreDB::cleanup_leftovers");
 
-        if keystore2_flags::remove_rebound_keyblobs_fix() {
-            self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
-                // Mark as orphaned any blobentry rows that have no associated keyentry row.
-                // Apply a per-reboot limit to avoid the possibility of delayed startup.
-                tx.execute(
+        self.with_transaction(Immediate("TX_cleanup_leftovers_mark_orphans"), |tx| {
+            // Mark as orphaned any blobentry rows that have no associated keyentry row.
+            // Apply a per-reboot limit to avoid the possibility of delayed startup.
+            let marked = tx
+                .execute(
                     "UPDATE persistent.blobentry SET state = ?
                     WHERE id IN (
                       SELECT id FROM persistent.blobentry
                       WHERE keyentryid NOT IN (
                         SELECT id FROM persistent.keyentry
                       )
-                      LIMIT 100000);",
-                    params![BlobState::Orphaned],
+                      LIMIT ?);",
+                    params![BlobState::Orphaned, orphan_limit],
                 )
-                .context("Trying to mark orphaned blobs")
-                .need_gc()
-            })
-            .context(ks_err!())?;
-        }
+                .context("Trying to mark orphaned blobs")?;
+            if marked > 0 {
+                info!("marked {marked} blobs without owners as orphaned");
+            }
+            Ok(()).need_gc()
+        })
+        .context(ks_err!())?;
 
         self.with_transaction(Immediate("TX_cleanup_leftovers"), |tx| {
             tx.execute(
@@ -2611,20 +2620,18 @@ impl KeystoreDB {
             )
             .context("Trying to delete grants.")?;
 
-            if keystore2_flags::remove_rebound_keyblobs_fix() {
-                // Mark as orphaned any blobentry rows that are associated with keyentry rows that
-                // are about to be deleted.  The orphaned rows will be removed in a later GC
-                // operation (which also involves notifying the owning KeyMint of keyblob deletion).
-                tx.execute(
-                    "UPDATE persistent.blobentry SET state=?
+            // Mark as orphaned any blobentry rows that are associated with keyentry rows that
+            // are about to be deleted.  The orphaned rows will be removed in a later GC
+            // operation (which also involves notifying the owning KeyMint of keyblob deletion).
+            tx.execute(
+                "UPDATE persistent.blobentry SET state=?
                     WHERE keyentryid IN (
                       SELECT id FROM persistent.keyentry
                       WHERE state = ?
                     );",
-                    params![BlobState::Orphaned, KeyLifeCycle::Unreferenced],
-                )
-                .context("Trying to mark to-be-orphaned blobs")?;
-            }
+                params![BlobState::Orphaned, KeyLifeCycle::Unreferenced],
+            )
+            .context("Trying to mark to-be-orphaned blobs")?;
 
             tx.execute(
                 "DELETE FROM persistent.keyentry

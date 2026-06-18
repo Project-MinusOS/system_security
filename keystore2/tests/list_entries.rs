@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{delete_all_entries, delete_app_key, verify_aliases};
+use crate::test_utils::{delete_all_entries, delete_app_key, verify_aliases};
 use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, IKeystoreService::IKeystoreService, KeyDescriptor::KeyDescriptor,
     KeyPermission::KeyPermission, ResponseCode::ResponseCode,
@@ -21,7 +21,7 @@ use keystore2_test_utils::{
     get_keystore_service, key_generations, key_generations::Error, run_as, SecLevel,
 };
 use nix::unistd::getuid;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 use std::collections::HashSet;
 use std::fmt::Write;
 
@@ -208,7 +208,7 @@ fn keystore2_list_entries_with_long_aliases_success() {
             imported_key_aliases.insert(alias.clone());
 
             let result = key_generations::import_aes_key(&sl, Domain::APP, -1, Some(alias));
-            assert!(result.is_ok());
+            assert!(result.is_ok(), "unexpected failure {result:?}");
         }
 
         // b/222287335 Limiting Keystore `listEntries` API to return subset of the Keystore

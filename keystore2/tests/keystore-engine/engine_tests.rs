@@ -35,7 +35,7 @@ use keystore2_test_utils::{
     authorizations::AuthSetBuilder, get_keystore_service, key_generations::Error, run_as, SecLevel,
 };
 use openssl::x509::X509;
-use rustutils::users::AID_USER_OFFSET;
+use rustutils::android::users::AID_USER_OFFSET;
 
 extern "C" {
     // In ffi_engine.{cpp,hpp}
@@ -163,7 +163,8 @@ fn perform_crypto_op_using_granted_key(
     grant_key_nspace: i64,
 ) {
     // Load the granted key from Keystore2-Engine API and perform crypto operations.
-    assert!(perform_crypto_op_using_keystore_engine(grant_key_nspace).is_ok());
+    let result = perform_crypto_op_using_keystore_engine(grant_key_nspace);
+    assert!(result.is_ok(), "unexpected failure {result:?}");
 
     // Delete the granted key.
     keystore2

@@ -26,11 +26,13 @@ rust_defaults {
         "libanyhow",
         "libbssl_sys",
         "libclap",
+        "libhex",
         "liblogger",
         "liblog_rust",
         "libnix",
         "librustutils",
         "libtokio",
+        "libzeroize",
     ],
 
     init_rc: ["prng_seeder.rc"],
@@ -52,19 +54,24 @@ rust_binary {
     prefer_rlib: true,
 }
 
-rust_test {
-    name: "prng_seeder.test",
-    edition: "2021",
-    srcs: ["src/main.rs"],
+rust_binary {
+    name: "prng_seeder_client",
+    srcs: ["test/src/main.rs"],
+    prefer_rlib: true,
     rustlibs: [
         "libanyhow",
-        "libbssl_sys",
         "libclap",
+        "libenv_logger",
+        "libhex",
         "liblogger",
         "liblog_rust",
         "libnix",
-        "librustutils",
-        "libtokio",
-    ],
+    ]
+}
+
+rust_test {
+    name: "prng_seeder.test",
+    defaults: ["prng_seeder_defaults"],
+    srcs: ["src/main.rs"],
     test_suites: ["general-tests"],
 }

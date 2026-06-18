@@ -1,0 +1,12 @@
+# Note that Cargo is not an officially supported build tool (Android's Soong is the official
+# tool).  This Cargo.toml file is included purely for the convenience of developers.
+
+[package]
+name = "hal-ta"
+version = "0.1.0"
+authors = ["David Drysdale <drysdale@google.com>", "Karuna Wadhera <kwadhera@google.com>"]
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+hal-wire = { path = "../wire" }

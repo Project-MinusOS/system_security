@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
+use crate::test_utils::{
     delete_app_key, perform_sample_sym_key_decrypt_op, perform_sample_sym_key_encrypt_op,
     SAMPLE_PLAIN_TEXT,
 };
@@ -23,7 +23,10 @@ use android_hardware_security_keymint::aidl::android::hardware::security::keymin
 use android_system_keystore2::aidl::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor,
 };
-use keystore2_test_utils::{authorizations, key_generations, key_generations::Error, SecLevel};
+use keystore2_test_utils::{
+    authorizations, key_generations, key_generations::get_vsr_api_level, key_generations::Error,
+    SecLevel,
+};
 
 /// Generate a 3DES key. Create encryption and decryption operations using the generated key.
 fn create_3des_key_and_operation(
@@ -155,8 +158,14 @@ fn keystore2_3des_key_fails_missing_padding() {
         false,
     ));
     delete_app_key(&sl.keystore2, alias).unwrap();
-    assert!(result.is_err());
-    assert_eq!(Error::Km(ErrorCode::UNSUPPORTED_PADDING_MODE), result.unwrap_err());
+    // b/454242778: Some devices launched with Android T only receive system updates,
+    // not vendor updates. Because the missing padding mode is not strictly enforced on
+    // older devices (vendor-api-level <= 33), we only apply this check to devices
+    // with vendor-api-level > 33 (Android 14 and later).
+    if get_vsr_api_level() > 33 {
+        assert!(result.is_err());
+        assert_eq!(Error::Km(ErrorCode::UNSUPPORTED_PADDING_MODE), result.unwrap_err());
+    }
 }
 
 /// Generate a 3DES key with padding mode NONE. Try to encrypt a text whose length isn't a

@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
+use crate::require_keymint;
+use crate::test_utils::{
     delete_app_key, device_id_attestation_check_acceptable_error, get_attest_id_value,
     is_second_imei_id_attestation_required, perform_sample_asym_sign_verify_op,
     skip_device_unique_attestation_tests,
 };
-use crate::require_keymint;
 use android_hardware_security_keymint::aidl::android::hardware::security::keymint::{
     Algorithm::Algorithm, Digest::Digest, EcCurve::EcCurve, ErrorCode::ErrorCode,
     KeyPurpose::KeyPurpose, PaddingMode::PaddingMode, Tag::Tag,
@@ -170,10 +170,14 @@ fn keystore2_gen_key_device_unique_attest_with_default_sec_level_unimplemented()
     let result =
         key_generations::map_ks_error(key_generations::generate_key(&sl, &gen_params, alias));
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        Error::Km(ErrorCode::INVALID_ARGUMENT) | Error::Km(ErrorCode::UNSUPPORTED_TAG)
-    ));
+    let err = result.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Km(ErrorCode::INVALID_ARGUMENT) | Error::Km(ErrorCode::UNSUPPORTED_TAG)
+        ),
+        "unexpected err {err:?}"
+    );
 }
 
 /// Generate a EC key with `DEVICE_UNIQUE_ATTESTATION` using `STRONGBOX` security level.

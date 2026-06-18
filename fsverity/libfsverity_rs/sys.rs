@@ -20,6 +20,7 @@ use nix::{ioctl_readwrite, ioctl_write_ptr};
 
 const FS_IOCTL_MAGIC: u8 = b'f';
 const FS_IOC_ENABLE_VERITY: u8 = 133;
+const FS_IOC_MEASURE_VERITY: u8 = 134;
 const FS_IOCTL_READ_VERITY_METADATA: u8 = 135;
 
 pub const FS_VERITY_HASH_ALG_SHA256: u32 = 1;
@@ -56,3 +57,12 @@ pub struct fsverity_enable_arg {
 }
 
 ioctl_write_ptr!(enable_verity, FS_IOCTL_MAGIC, FS_IOC_ENABLE_VERITY, fsverity_enable_arg);
+
+#[repr(C)]
+pub struct fsverity_measure_arg {
+    pub digest_algorithm: u16,
+    pub digest_size: u16,
+    pub digest: [u8; 0],
+}
+
+ioctl_readwrite!(read_verity_digest, FS_IOCTL_MAGIC, FS_IOC_MEASURE_VERITY, fsverity_measure_arg);

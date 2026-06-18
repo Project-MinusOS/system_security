@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::keystore2_client_test_utils::{
+use crate::test_utils::{
     delete_app_key, perform_sample_sym_key_decrypt_op, perform_sample_sym_key_encrypt_op,
     SAMPLE_PLAIN_TEXT,
 };
@@ -250,12 +250,16 @@ fn keystore2_aes_key_op_fails_multi_block_modes() {
     ));
     delete_app_key(&sl.keystore2, alias).unwrap();
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        Error::Km(ErrorCode::INCOMPATIBLE_BLOCK_MODE)
-            | Error::Km(ErrorCode::UNSUPPORTED_BLOCK_MODE)
-            | Error::Km(ErrorCode::INVALID_ARGUMENT)
-    ));
+    let err = result.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Km(ErrorCode::INCOMPATIBLE_BLOCK_MODE)
+                | Error::Km(ErrorCode::UNSUPPORTED_BLOCK_MODE)
+                | Error::Km(ErrorCode::INVALID_ARGUMENT)
+        ),
+        "unexpected error {err:?}"
+    );
 }
 
 /// Try to create an operation using AES key with multiple padding modes. Test should fail to create
@@ -304,12 +308,16 @@ fn keystore2_aes_key_op_fails_multi_padding_modes() {
     ));
     delete_app_key(&sl.keystore2, alias).unwrap();
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        Error::Km(ErrorCode::INCOMPATIBLE_PADDING_MODE)
-            | Error::Km(ErrorCode::UNSUPPORTED_PADDING_MODE)
-            | Error::Km(ErrorCode::INVALID_ARGUMENT)
-    ));
+    let err = result.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Km(ErrorCode::INCOMPATIBLE_PADDING_MODE)
+                | Error::Km(ErrorCode::UNSUPPORTED_PADDING_MODE)
+                | Error::Km(ErrorCode::INVALID_ARGUMENT)
+        ),
+        "unexpected err {err:?}"
+    );
 }
 
 /// Generate a AES-ECB key with unpadded mode. Try to create an operation using generated key
@@ -400,6 +408,9 @@ fn keystore2_aes_gcm_op_fails_missing_mac_len() {
     assert!(
         e == Error::Km(ErrorCode::MISSING_MAC_LENGTH)
             || e == Error::Km(ErrorCode::UNSUPPORTED_MAC_LENGTH)
+            // Add INVALID_TAG for compatibility with older versions implementations
+            || e == Error::Km(ErrorCode::INVALID_TAG),
+        "unexpected err {e:?}"
     );
 }
 
@@ -442,7 +453,13 @@ fn keystore2_aes_gcm_op_fails_unsupported_mac_len() {
         &mut None,
     ));
     assert!(result.is_err());
-    assert_eq!(Error::Km(ErrorCode::UNSUPPORTED_MAC_LENGTH), result.unwrap_err());
+    let e = result.unwrap_err();
+    assert!(
+        e == Error::Km(ErrorCode::UNSUPPORTED_MAC_LENGTH)
+            // Add INVALID_MAC_LENGTH for compatibility with older versions implementations
+            || e == Error::Km(ErrorCode::INVALID_MAC_LENGTH),
+        "unexpected err {e:?}"
+    );
 }
 
 /// Generate a AES-CBC-PKCS7 key without `CALLER_NONCE` authorization. Try to set nonce while

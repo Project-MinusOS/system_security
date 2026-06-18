@@ -47,7 +47,7 @@ use anyhow::{Context, Result};
 use binder::FromIBinder;
 use binder::{get_declared_instances, is_declared};
 use log::{error, info};
-use rustutils::system_properties::PropertyWatcher;
+use rustutils::android::system_properties::PropertyWatcher;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, LazyLock, Mutex, RwLock,
@@ -80,8 +80,9 @@ pub fn create_thread_local_db() -> KeystoreDB {
 
     DB_INIT.call_once(|| {
         info!("Touching Keystore 2.0 database for this first time since boot.");
-        info!("Calling cleanup leftovers.");
-        let n = db.cleanup_leftovers().expect("Failed to cleanup database on startup");
+        let orphan_limit = if keystore2_flags::faster_rebind_cleanup() { 100_000 } else { 5_000 };
+        info!("Calling cleanup_leftovers({orphan_limit})");
+        let n = db.cleanup_leftovers(orphan_limit).expect("Failed to cleanup database on startup");
         if n != 0 {
             info!("Cleaned up {n} failed entries, indicating keystore crash on key generation");
         }
@@ -116,8 +117,11 @@ impl<T: FromIBinder + ?Sized> DevicesMap<T> {
             .map(|(dev, hw_info)| ((*dev).clone(), (*hw_info).clone(), *uuid))
     }
 
-    fn devices(&self) -> Vec<Strong<T>> {
-        self.devices_by_uuid.values().map(|(dev, _)| dev.clone()).collect()
+    fn devices(&self) -> Vec<(Strong<T>, SecurityLevel)> {
+        self.devices_by_uuid
+            .values()
+            .map(|(dev, hw_info)| (dev.clone(), hw_info.securityLevel))
+            .collect()
     }
 
     /// The requested security level and the security level of the actual implementation may
@@ -276,8 +280,9 @@ fn connect_keymint(
     // If the KeyMint device is back-level, use a wrapper that intercepts and
     // emulates things that are not supported by the hardware.
     let keymint = match hal_version {
-        Some(400) | Some(300) | Some(200) => {
-            // KeyMint v2+: use as-is (we don't have any software emulation of v3 or v4-specific KeyMint features).
+        Some(500) | Some(400) | Some(300) | Some(200) => {
+            // KeyMint v2+: use as-is (we don't have any software emulation of KeyMint features from
+            // v3 or later).
             info!(
                 "KeyMint device is current version ({hal_version:?}) for security level: {security_level:?}",
             );
@@ -363,8 +368,8 @@ pub fn get_keymint_dev_by_uuid(
     }
 }
 
-/// Return all known keymint devices.
-pub fn get_keymint_devices() -> Vec<Strong<dyn IKeyMintDevice>> {
+/// Return all known IKeyMintDevice instances along with their security levels.
+pub fn get_keymint_devices() -> Vec<(Strong<dyn IKeyMintDevice>, SecurityLevel)> {
     KEY_MINT_DEVICES.lock().unwrap().devices()
 }
 

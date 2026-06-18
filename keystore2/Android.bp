@@ -135,6 +135,7 @@ rust_defaults {
     srcs: ["src/keystore2_main.rs"],
     rustlibs: [
         "libandroid_logger",
+        "libandroid_security_flags_rust",
         "libbinder_rs",
         "liblog_rust",
     ],
